@@ -24,12 +24,18 @@ that foundation.
 | Layer | Choice |
 |---|---|
 | Backend | Django + Django REST Framework (DRF) |
+| Backend package manager | [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv.lock`) — not pip/poetry |
 | App server | [Granian](https://github.com/emmett-framework/granian) (ASGI) — **not** uvicorn/gunicorn |
+| Linting | [Ruff](https://docs.astral.sh/ruff/) (lint only; no formatter opinion enforced yet) |
+| Backend tests | pytest + pytest-django, [model_bakery](https://model-bakery.readthedocs.io/) for fixtures, Faker for random data |
 | Database | PostgreSQL |
+| Media storage | MinIO (S3-compatible), via `django-storages` — wired up ahead of need, no model uses a file field yet |
 | Async / background jobs | Celery + Redis (broker & result backend) |
 | Frontend | Next.js (App Router) + React + TypeScript + Tailwind CSS + shadcn/ui |
+| Frontend package manager | [pnpm](https://pnpm.io/) — not npm/yarn |
+| Frontend data layer | [TanStack Query](https://tanstack.com/query) for server-state/caching, [Zod](https://zod.dev/) for schema validation (API response parsing + form input validation) |
 | Containerization | Docker + Docker Compose (all services run via `docker compose up`) |
-| Theming | Light + dark mode out of the box, minimalist design |
+| Theming | Light + dark mode out of the box (shadcn/ui + `next-themes`), minimalist design |
 
 ## Architecture principles
 
@@ -51,7 +57,10 @@ views. Instead:
 - Adding a new role (e.g. "editor" who can create `MetricEntry` but not `MetricType`) means
   changing `PermissionService` only — no view rewrites.
 - Today: only admins (members of the `admin` Django group, or superusers) can create/update/delete
-  `MetricType` and `MetricEntry`. Everyone authenticated can read their own data.
+  `MetricType` and `MetricEntry`. Everyone authenticated can read their own data (admins can read
+  everyone's).
+- The frontend also gates admin-only actions in the UI (via `GET /api/auth/me/`'s `is_admin`
+  flag), but that's a UX nicety only — the backend permission is the actual boundary.
 
 ### Generalized metrics layer
 This is the foundational abstraction for the whole app — **not** hardcoded to specific metric
@@ -67,10 +76,18 @@ types (weight, blood sugar, insulin dose, water intake, etc. are all just data).
   fit "one value + optional metadata at a point in time" (e.g. multi-line finance transactions
   later on).
 
+### Backend layering convention (selectors / services)
+- **`selectors.py`** (per app, e.g. `backend/apps/metrics/selectors.py`) holds all read-query
+  logic. Views/viewsets never build querysets inline in `get_queryset` — they call a selector.
+  This is where ownership/visibility rules (e.g. "admins see everyone's entries, everyone else
+  sees only their own") live, in one place per resource.
+- A `services.py` per app (write-side logic beyond what a serializer's `create`/`update` can
+  reasonably hold) will be introduced the first time a feature needs one — none has needed it yet.
+
 ### Infrastructure set up ahead of need
-Celery + Redis are wired up (broker, result backend, worker service in Compose) starting with the
-metrics feature even though no tasks exist yet, so future features (e.g. scheduled aggregation,
-reminders) don't require infra work.
+Celery + Redis and MinIO are wired up (broker/result backend, worker service, S3-compatible
+media storage) starting with the metrics feature even though nothing uses them yet (no Celery
+tasks, no file fields), so future features don't require infra work.
 
 ## Directory structure
 
@@ -81,9 +98,10 @@ life-controller/
 ├── .env.example
 ├── backend/
 │   ├── Dockerfile
-│   ├── requirements.txt
+│   ├── pyproject.toml            # uv-managed deps + ruff + pytest config
+│   ├── uv.lock
 │   ├── manage.py
-│   ├── config/                  # Django project package
+│   ├── config/                   # Django project package
 │   │   ├── settings/
 │   │   │   ├── base.py
 │   │   │   ├── dev.py
@@ -92,28 +110,47 @@ life-controller/
 │   │   ├── celery.py
 │   │   ├── asgi.py
 │   │   └── wsgi.py
-│   └── apps/
-│       ├── core/                 # shared: PermissionService, base models/mixins
-│       ├── users/                 # custom User model (multi-user ready)
-│       └── metrics/               # MetricType / MetricEntry — first feature
-│           ├── models.py
-│           ├── serializers.py
-│           ├── views.py
-│           ├── permissions.py
-│           ├── admin.py
-│           ├── urls.py
-│           └── tests/
+│   ├── apps/
+│   │   ├── core/                  # shared: PermissionService, base models/mixins
+│   │   ├── users/                 # custom User model + session auth endpoints
+│   │   │   ├── models.py
+│   │   │   ├── serializers.py
+│   │   │   ├── views.py           # LoginView / LogoutView / MeView
+│   │   │   └── urls.py
+│   │   └── metrics/               # MetricType / MetricEntry — first feature
+│   │       ├── models.py
+│   │       ├── selectors.py       # all read-query logic for this app
+│   │       ├── serializers.py
+│   │       ├── views.py
+│   │       ├── permissions.py
+│   │       ├── admin.py
+│   │       └── urls.py
+│   └── tests/                     # all backend tests live here, mirroring apps/
+│       ├── conftest.py            # fixtures shared across every test package
+│       ├── core/
+│       ├── users/
+│       └── metrics/
+│           └── conftest.py        # fixtures shared within tests/metrics/ only
 └── frontend/
     ├── Dockerfile
     ├── package.json
     ├── app/
-    │   ├── layout.tsx             # ThemeProvider (light/dark)
-    │   └── metrics/                # MetricType list/create, MetricEntry list/create
+    │   ├── layout.tsx              # QueryProvider > ThemeProvider > AuthProvider > NavBar
+    │   ├── login/page.tsx
+    │   └── metrics/
+    │       ├── page.tsx             # MetricType list + create (admin-gated)
+    │       └── [id]/page.tsx        # MetricEntry list + create for one MetricType
     ├── components/
-    │   ├── ui/                     # shadcn/ui primitives only
+    │   ├── ui/                      # shadcn/ui primitives only
+    │   ├── metrics/                 # feature components (create dialogs)
+    │   ├── auth-provider.tsx        # current-user context, backed by TanStack Query
+    │   ├── query-provider.tsx
+    │   ├── theme-provider.tsx
     │   └── theme-toggle.tsx
     └── lib/
-        └── api.ts                  # typed API client
+        ├── api.ts                   # typed API client — parses every response with Zod
+        ├── types.ts                 # Zod schemas + inferred TS types
+        └── query-keys.ts            # centralized TanStack Query key factories
 ```
 
 ## Running locally
@@ -123,24 +160,33 @@ cp .env.example .env
 docker compose up --build
 ```
 
-This starts: `db` (Postgres), `redis`, `backend` (Django/DRF served by Granian), `celery-worker`,
-and `frontend` (Next.js dev server).
+This starts: `db` (Postgres), `redis`, `minio` + `minio-init` (bucket bootstrap), `backend`
+(Django/DRF served by Granian, auto-reload), `celery-worker`, and `frontend` (Next.js dev server).
 
-- Backend: http://localhost:8000
 - Frontend: http://localhost:3000
+- Backend: http://localhost:8000
 - Django admin: http://localhost:8000/admin
+- MinIO console: http://localhost:9001
 
-First-time setup (migrations + an admin user):
+First-time setup (migrations run automatically on backend startup; you still need a user):
 
 ```bash
-docker compose exec backend python manage.py migrate
 docker compose exec backend python manage.py createsuperuser
 ```
 
-Backend tests:
+Backend tests and lint (also runnable outside Docker via `uv run` from `backend/`):
 
 ```bash
-docker compose exec backend python manage.py test
+docker compose exec backend uv run pytest
+docker compose exec backend uv run ruff check .
+```
+
+Frontend lint/typecheck (from `frontend/`, requires `pnpm install` locally or run inside the
+`frontend` container):
+
+```bash
+pnpm exec eslint .
+pnpm exec tsc --noEmit
 ```
 
 ## Git workflow
@@ -155,6 +201,6 @@ docker compose exec backend python manage.py test
 
 | Feature | Branch | Status |
 |---|---|---|
-| Metrics module (MetricType/MetricEntry backend + admin-only permissions + Docker infra + minimal frontend CRUD UI) | `feature/metrics-module` | In progress |
+| Metrics module (MetricType/MetricEntry backend + centralized admin-only permissions + session auth + Docker infra incl. MinIO + frontend CRUD UI with TanStack Query/Zod) | `feature/metrics-module` | Implemented, manually verified end-to-end via browser (login, create metric type, log entry, admin vs. non-admin gating, light/dark theme) |
 
 No other feature modules (nutrition, workouts, finances) have been started yet.

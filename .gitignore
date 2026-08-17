@@ -1,0 +1,19 @@
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# Backend (Python)
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.egg-info/
+backend/db.sqlite3
+backend/staticfiles/
+backend/.pytest_cache/
+backend/.ruff_cache/
+
+# OS
+.DS_Store
