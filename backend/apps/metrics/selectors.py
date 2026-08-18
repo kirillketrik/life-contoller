@@ -7,7 +7,7 @@ resource instead of duplicated across `get_queryset` methods.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from dateutil.relativedelta import relativedelta
 from django.db.models import Count, QuerySet
@@ -16,11 +16,20 @@ from django.utils import timezone
 
 from apps.core.permissions import PermissionService
 
-from .aggregation import DataPoint
+from .aggregation import DataPoint, RangeSummary, Timeframe, TimeframeUnit, bucketize, summarize
 from .formulas import computed_series
-from .models import FormulaDefinition, MetricEntry, MetricThreshold, MetricType
+from .models import (
+    FavoriteMetric,
+    FormulaDefinition,
+    MetricEntry,
+    MetricThreshold,
+    MetricType,
+    ValueType,
+)
 
 DASHBOARD_TREND_MONTHS = 12
+FAVORITE_CHART_RANGE_DAYS = 30
+FAVORITE_CHART_TIMEFRAME = Timeframe(unit=TimeframeUnit.DAY, count=1)
 
 
 def metric_type_list() -> QuerySet[MetricType]:
@@ -79,6 +88,76 @@ def metric_threshold_list_for_user(*, user) -> QuerySet[MetricThreshold]:
 
 def metric_threshold_get_for_user(*, user, metric_type_id: int) -> MetricThreshold | None:
     return MetricThreshold.objects.filter(user=user, metric_type_id=metric_type_id).first()
+
+
+def favorite_metric_list_for_user(*, user) -> QuerySet[FavoriteMetric]:
+    return FavoriteMetric.objects.filter(user=user).select_related("metric_type")
+
+
+def favorites_chart_data_for_user(*, user) -> list[dict]:
+    """Every favorited metric type for `user`, each with a pre-bucketed recent
+    series — so the dashboard's favorites section renders every card from
+    this one response instead of one `/aggregate/` request per card.
+
+    Mirrors `points_for_metric_type`/`bucketize`/`summarize` (used by the
+    `/aggregate/` action), just with a fixed recent-range window instead of a
+    caller-supplied timeframe. Non-chartable metric types (favorited is
+    normally prevented by the UI, but the API doesn't enforce it — see
+    `apps.metrics.views`) degrade to an empty series rather than erroring.
+    """
+    range_end = timezone.now()
+    range_start = range_end - timedelta(days=FAVORITE_CHART_RANGE_DAYS)
+
+    result = []
+    for favorite in favorite_metric_list_for_user(user=user):
+        metric_type = favorite.metric_type
+        chartable = metric_type.is_computed or metric_type.value_type == ValueType.NUMBER
+        if chartable:
+            points = points_for_metric_type(
+                metric_type=metric_type, user=user, range_start=range_start, range_end=range_end
+            )
+            buckets = bucketize(points, FAVORITE_CHART_TIMEFRAME, range_start)
+            summary = summarize(points)
+        else:
+            buckets = []
+            summary = RangeSummary(min=None, max=None, avg=None, count=0)
+
+        result.append(
+            {
+                "id": favorite.id,
+                "order": favorite.order,
+                "metric_type": {
+                    "id": metric_type.id,
+                    "name": metric_type.name,
+                    "unit": metric_type.unit,
+                    "value_type": metric_type.value_type,
+                    "aggregation": metric_type.aggregation,
+                    "is_computed": metric_type.is_computed,
+                    "created_by": metric_type.created_by_id,
+                    "created_at": metric_type.created_at.isoformat(),
+                    "updated_at": metric_type.updated_at.isoformat(),
+                },
+                "timeframe_unit": FAVORITE_CHART_TIMEFRAME.unit.value,
+                "buckets": [
+                    {
+                        "bucket_start": bucket.bucket_start.isoformat(),
+                        "open": bucket.open,
+                        "high": bucket.high,
+                        "low": bucket.low,
+                        "close": bucket.close,
+                        "count": bucket.count,
+                    }
+                    for bucket in buckets
+                ],
+                "summary": {
+                    "min": summary.min,
+                    "max": summary.max,
+                    "avg": summary.avg,
+                    "count": summary.count,
+                },
+            }
+        )
+    return result
 
 
 def formula_definition_list() -> QuerySet[FormulaDefinition]:

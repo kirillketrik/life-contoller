@@ -10,6 +10,8 @@ import {
   currentUserSchema,
   type DashboardSummary,
   dashboardSummarySchema,
+  type FavoriteMetric,
+  favoriteMetricListSchema,
   type FormulaDefinition,
   formulaDefinitionSchema,
   type LoginInput,
@@ -175,6 +177,20 @@ export const metricThresholds = {
 
 export const dashboardSummary = {
   get: (): Promise<DashboardSummary> => request(dashboardSummarySchema, "/api/dashboard-summary/"),
+};
+
+export const favoriteMetrics = {
+  list: (): Promise<FavoriteMetric[]> =>
+    request(favoriteMetricListSchema, "/api/metric-types/favorites/"),
+  add: (metricTypeId: number) =>
+    requestVoid(`/api/metric-types/${metricTypeId}/favorite/`, { method: "POST" }),
+  remove: (metricTypeId: number) =>
+    requestVoid(`/api/metric-types/${metricTypeId}/favorite/`, { method: "DELETE" }),
+  reorder: (metricTypeIds: number[]): Promise<FavoriteMetric[]> =>
+    request(favoriteMetricListSchema, "/api/metric-types/favorites/reorder/", {
+      method: "PATCH",
+      body: JSON.stringify({ metric_type_ids: metricTypeIds }),
+    }),
 };
 
 export const formulaDefinitions = {

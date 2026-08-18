@@ -105,6 +105,37 @@ class MetricThreshold(models.Model):
         return f"{self.metric_type.name} threshold for {self.user}"
 
 
+class FavoriteMetric(models.Model):
+    """A user's favorited metric type, shown on their personal dashboard.
+
+    Per-user, not global — favoriting is a personal preference, scoped like
+    `MetricThreshold`, not a shared/admin-defined resource like `MetricType`
+    itself. `order` supports user-controlled ordering of the dashboard's
+    favorites section (defaults to 0 for every new favorite, so insertion
+    order — via `created_at` — is the tie-breaker until explicitly reordered).
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="favorite_metrics"
+    )
+    metric_type = models.ForeignKey(
+        MetricType, on_delete=models.CASCADE, related_name="favorited_by"
+    )
+    order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["order", "created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "metric_type"], name="unique_favorite_metric_per_user"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.metric_type.name} favorited by {self.user}"
+
+
 class FormulaDefinition(models.Model):
     """Defines how a computed `MetricType` (`is_computed=True`) is derived
     from other metric types. There is exactly one definition per computed

@@ -175,3 +175,15 @@ export const dashboardSummarySchema = z.object({
   entries_by_month: z.array(dashboardEntriesByMonthSchema),
 });
 export type DashboardSummary = z.infer<typeof dashboardSummarySchema>;
+
+export const favoriteMetricSchema = z.object({
+  id: z.number(),
+  order: z.number(),
+  metric_type: metricTypeSchema,
+  timeframe_unit: timeframeUnitSchema,
+  buckets: z.array(ohlcBucketSchema),
+  summary: rangeSummarySchema,
+});
+export type FavoriteMetric = z.infer<typeof favoriteMetricSchema>;
+
+export const favoriteMetricListSchema = z.array(favoriteMetricSchema);

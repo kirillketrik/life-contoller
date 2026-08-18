@@ -8,7 +8,14 @@ from rest_framework.views import APIView
 
 from . import selectors
 from .aggregation import Timeframe, TimeframeUnit, bucketize, summarize, time_in_range_percent
-from .models import FormulaDefinition, MetricEntry, MetricThreshold, MetricType, ValueType
+from .models import (
+    FavoriteMetric,
+    FormulaDefinition,
+    MetricEntry,
+    MetricThreshold,
+    MetricType,
+    ValueType,
+)
 from .permissions import (
     FormulaDefinitionPermission,
     MetricEntryPermission,
@@ -17,11 +24,14 @@ from .permissions import (
 )
 from .serializers import (
     AggregateQuerySerializer,
+    FavoriteReorderSerializer,
     FormulaDefinitionSerializer,
     MetricEntrySerializer,
     MetricThresholdSerializer,
     MetricTypeSerializer,
 )
+
+FAVORITE_ACTIONS = {"favorite", "favorites", "reorder_favorites"}
 
 DEFAULT_RELATIVE_DAYS = 30
 
@@ -33,6 +43,57 @@ class MetricTypeViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return selectors.metric_type_list()
+
+    def get_permissions(self):
+        """Favoriting is a personal action any authenticated user takes on
+        their own dashboard, not a role-gated edit of the shared MetricType
+        catalog — same ownership-vs-role-gated distinction as MetricEntry/
+        MetricThreshold (see apps.metrics.permissions), just exposed as
+        actions on this viewset instead of a separate one. Ownership itself
+        is enforced by scoping every query to `request.user` in the action
+        bodies below, not by an object-level permission check."""
+        if self.action in FAVORITE_ACTIONS:
+            return [permissions.IsAuthenticated()]
+        return super().get_permissions()
+
+    @action(detail=True, methods=["post", "delete"], url_path="favorite")
+    def favorite(self, request, pk=None):
+        """Idempotent: POST when already favorited, or DELETE when not, is a
+        no-op rather than an error."""
+        metric_type = selectors.metric_type_get(metric_type_id=pk)
+        if metric_type is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if request.method == "POST":
+            FavoriteMetric.objects.get_or_create(user=request.user, metric_type=metric_type)
+        else:
+            FavoriteMetric.objects.filter(user=request.user, metric_type=metric_type).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=False, methods=["get"], url_path="favorites")
+    def favorites(self, request):
+        return Response(selectors.favorites_chart_data_for_user(user=request.user))
+
+    @action(detail=False, methods=["patch"], url_path="favorites/reorder")
+    def reorder_favorites(self, request):
+        serializer = FavoriteReorderSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        metric_type_ids = serializer.validated_data["metric_type_ids"]
+
+        favorites_by_type = {
+            favorite.metric_type_id: favorite
+            for favorite in selectors.favorite_metric_list_for_user(user=request.user)
+        }
+        if set(metric_type_ids) != set(favorites_by_type):
+            return Response(
+                {"detail": "metric_type_ids must match your current favorites exactly."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        for index, metric_type_id in enumerate(metric_type_ids):
+            favorite = favorites_by_type[metric_type_id]
+            if favorite.order != index:
+                favorite.order = index
+                favorite.save(update_fields=["order"])
+        return Response(selectors.favorites_chart_data_for_user(user=request.user))
 
     @action(detail=True, methods=["get"])
     def aggregate(self, request, pk=None):
