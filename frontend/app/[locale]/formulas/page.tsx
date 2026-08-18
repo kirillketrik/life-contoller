@@ -73,7 +73,7 @@ export default function FormulasPage() {
                 <TableCell>
                   {typesById.get(definition.computed_metric_type)?.name ?? definition.computed_metric_type}
                 </TableCell>
-                <TableCell className="font-mono text-sm text-muted-foreground">
+                <TableCell className="max-w-[36rem] whitespace-normal break-words font-mono text-sm text-muted-foreground">
                   {renderFormulaNodeRussian(definition.expression, typesById)}
                 </TableCell>
               </TableRow>
