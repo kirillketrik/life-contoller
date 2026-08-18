@@ -2,6 +2,7 @@ import pytest
 from model_bakery import baker
 from rest_framework import status
 
+from apps.metrics.formula_engine import builtins
 from apps.metrics.models import FormulaDefinition, MetricType, ValueType
 
 pytestmark = pytest.mark.django_db
@@ -19,6 +20,10 @@ def weight_and_height(db):
     return weight, height
 
 
+def bmi_expression(weight, height):
+    return builtins.build_bmi(weight_kg_id=weight.id, height_cm_id=height.id)
+
+
 class TestFormulaDefinitionPermissions:
     def test_anonymous_cannot_view(self, api_client):
         response = api_client.get("/api/formula-definitions/")
@@ -28,14 +33,15 @@ class TestFormulaDefinitionPermissions:
         response = authenticated_client.get("/api/formula-definitions/")
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
-    def test_regular_user_cannot_create(self, authenticated_client, computed_type, weight_and_height):
+    def test_regular_user_cannot_create(
+        self, authenticated_client, computed_type, weight_and_height
+    ):
         weight, height = weight_and_height
         response = authenticated_client.post(
             "/api/formula-definitions/",
             {
                 "computed_metric_type": computed_type.id,
-                "formula_key": "bmi",
-                "input_mapping": {"weight_kg": weight.id, "height_cm": height.id},
+                "expression": bmi_expression(weight, height),
             },
             format="json",
         )
@@ -47,8 +53,7 @@ class TestFormulaDefinitionPermissions:
             "/api/formula-definitions/",
             {
                 "computed_metric_type": computed_type.id,
-                "formula_key": "bmi",
-                "input_mapping": {"weight_kg": weight.id, "height_cm": height.id},
+                "expression": bmi_expression(weight, height),
             },
             format="json",
         )
@@ -60,28 +65,55 @@ class TestFormulaDefinitionPermissions:
 
 
 class TestFormulaDefinitionValidation:
-    def test_computed_metric_type_must_be_marked_computed(self, admin_client, weight_and_height, db):
+    def test_computed_metric_type_must_be_marked_computed(
+        self, admin_client, weight_and_height, db
+    ):
         weight, height = weight_and_height
         not_computed = baker.make(MetricType, value_type=ValueType.NUMBER, is_computed=False)
         response = admin_client.post(
             "/api/formula-definitions/",
             {
                 "computed_metric_type": not_computed.id,
-                "formula_key": "bmi",
-                "input_mapping": {"weight_kg": weight.id, "height_cm": height.id},
+                "expression": bmi_expression(weight, height),
             },
             format="json",
         )
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
-    def test_rejects_unknown_input_mapping_variables(self, admin_client, computed_type, weight_and_height):
-        weight, height = weight_and_height
+    def test_rejects_expression_referencing_unknown_metric_type(self, admin_client, computed_type):
         response = admin_client.post(
             "/api/formula-definitions/",
             {
                 "computed_metric_type": computed_type.id,
-                "formula_key": "bmi",
-                "input_mapping": {"weight_kg": weight.id, "not_a_real_variable": height.id},
+                "expression": {"type": "metric", "metric_type_id": 999999},
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_rejects_literal_division_by_zero(self, admin_client, computed_type, weight_and_height):
+        weight, _ = weight_and_height
+        response = admin_client.post(
+            "/api/formula-definitions/",
+            {
+                "computed_metric_type": computed_type.id,
+                "expression": {
+                    "type": "binary_op",
+                    "op": "/",
+                    "left": {"type": "metric", "metric_type_id": weight.id},
+                    "right": {"type": "constant", "value": 0},
+                },
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_rejects_self_referencing_expression(self, admin_client, computed_type):
+        response = admin_client.post(
+            "/api/formula-definitions/",
+            {
+                "computed_metric_type": computed_type.id,
+                "expression": {"type": "metric", "metric_type_id": computed_type.id},
             },
             format="json",
         )
@@ -94,16 +126,51 @@ class TestFormulaDefinitionValidation:
         baker.make(
             FormulaDefinition,
             computed_metric_type=computed_type,
-            formula_key=FormulaDefinition.FormulaKey.BMI,
-            input_mapping={"weight_kg": weight.id, "height_cm": height.id},
+            expression=bmi_expression(weight, height),
         )
         response = admin_client.post(
             "/api/formula-definitions/",
             {
                 "computed_metric_type": computed_type.id,
-                "formula_key": "bmi",
-                "input_mapping": {"weight_kg": weight.id, "height_cm": height.id},
+                "expression": bmi_expression(weight, height),
             },
             format="json",
         )
         assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+
+class TestFormulaPreview:
+    def test_admin_can_preview_a_valid_expression(self, admin_client, weight_and_height):
+        weight, height = weight_and_height
+        response = admin_client.post(
+            "/api/formula-definitions/preview/",
+            {"expression": bmi_expression(weight, height)},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["errors"] == []
+        # no entries logged for the admin yet -> value is None, not an error
+        assert response.data["value"] is None
+
+    def test_preview_reports_validation_errors_without_saving(self, admin_client, computed_type):
+        response = admin_client.post(
+            "/api/formula-definitions/preview/",
+            {
+                "expression": {"type": "metric", "metric_type_id": computed_type.id},
+                "computed_metric_type": computed_type.id,
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["value"] is None
+        assert [e["code"] for e in response.data["errors"]] == ["circular_reference"]
+        assert not FormulaDefinition.objects.exists()
+
+    def test_regular_user_cannot_preview(self, authenticated_client, weight_and_height):
+        weight, height = weight_and_height
+        response = authenticated_client.post(
+            "/api/formula-definitions/preview/",
+            {"expression": bmi_expression(weight, height)},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN

@@ -2,13 +2,28 @@ from datetime import date
 
 from rest_framework import serializers
 
+from . import formula_engine, services
 from .aggregation import TimeframeUnit
-from .formulas import FORMULA_INPUT_VARS
-from .models import FormulaDefinition, MetricEntry, MetricThreshold, MetricType, ValueType
+from .models import (
+    FormulaDefinition,
+    MetricEntry,
+    MetricThreshold,
+    MetricType,
+    MetricTypeChoice,
+    ValueType,
+)
+
+
+class MetricTypeChoiceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MetricTypeChoice
+        fields = ["id", "code", "label", "numeric_value", "order"]
+        read_only_fields = ["id"]
 
 
 class MetricTypeSerializer(serializers.ModelSerializer):
     created_by = serializers.PrimaryKeyRelatedField(read_only=True)
+    choices = MetricTypeChoiceSerializer(many=True, required=False)
 
     class Meta:
         model = MetricType
@@ -22,12 +37,37 @@ class MetricTypeSerializer(serializers.ModelSerializer):
             "created_by",
             "created_at",
             "updated_at",
+            "choices",
         ]
         read_only_fields = ["id", "created_by", "created_at", "updated_at"]
 
+    def validate(self, attrs):
+        value_type = attrs.get("value_type") or getattr(self.instance, "value_type", None)
+        choices = attrs.get("choices")
+        if value_type == ValueType.CHOICE:
+            if not choices:
+                raise serializers.ValidationError(
+                    {"choices": "A choice metric type needs at least one option."}
+                )
+            codes = [choice["code"] for choice in choices]
+            if len(codes) != len(set(codes)):
+                raise serializers.ValidationError({"choices": "Option codes must be unique."})
+        return attrs
+
     def create(self, validated_data):
-        validated_data["created_by"] = self.context["request"].user
-        return super().create(validated_data)
+        choices_data = validated_data.pop("choices", [])
+        return services.create_metric_type_with_choices(
+            validated_data=validated_data,
+            choices_data=choices_data,
+            user=self.context["request"].user,
+        )
+
+    def update(self, instance, validated_data):
+        choices_data = validated_data.pop("choices", None)
+        instance = super().update(instance, validated_data)
+        if choices_data is not None:
+            services.update_metric_type_choices(metric_type=instance, choices_data=choices_data)
+        return instance
 
 
 class MetricEntrySerializer(serializers.ModelSerializer):
@@ -76,6 +116,7 @@ class MetricEntrySerializer(serializers.ModelSerializer):
             ValueType.BOOLEAN: bool,
             ValueType.TEXT: str,
             ValueType.DATE: str,
+            ValueType.CHOICE: str,
         }
         expected = expectations.get(metric_type.value_type)
         if expected is None:
@@ -96,6 +137,12 @@ class MetricEntrySerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"value": "Expected an ISO date string (YYYY-MM-DD) for this metric type."}
                 ) from exc
+        if metric_type.value_type == ValueType.CHOICE:
+            valid_codes = set(metric_type.choices.values_list("code", flat=True))
+            if value not in valid_codes:
+                raise serializers.ValidationError(
+                    {"value": f"'{value}' is not a valid option for this metric type."}
+                )
 
 
 class MetricThresholdSerializer(serializers.ModelSerializer):
@@ -146,8 +193,7 @@ class FormulaDefinitionSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "computed_metric_type",
-            "formula_key",
-            "input_mapping",
+            "expression",
             "created_by",
             "created_at",
             "updated_at",
@@ -163,28 +209,33 @@ class FormulaDefinitionSerializer(serializers.ModelSerializer):
                 {"computed_metric_type": "Must be a MetricType with is_computed=True."}
             )
 
-        formula_key = attrs.get("formula_key") or getattr(self.instance, "formula_key", None)
-        input_mapping = attrs.get("input_mapping", getattr(self.instance, "input_mapping", None))
-        if formula_key and input_mapping is not None:
-            if not isinstance(input_mapping, dict):
+        expression = attrs.get("expression", getattr(self.instance, "expression", None))
+        if expression is not None:
+            errors = formula_engine.validate_expression(
+                expression,
+                computed_metric_type_id=computed_metric_type.id if computed_metric_type else None,
+            )
+            if errors:
                 raise serializers.ValidationError(
                     {
-                        "input_mapping": (
-                            "Must be an object mapping variable name to input MetricType id."
-                        )
+                        "expression": [
+                            {"code": error.code, "detail": error.detail} for error in errors
+                        ]
                     }
-                )
-            allowed_vars = set(FORMULA_INPUT_VARS.get(formula_key, ()))
-            unknown = set(input_mapping) - allowed_vars
-            if unknown:
-                raise serializers.ValidationError(
-                    {"input_mapping": f"Unknown variables for '{formula_key}': {sorted(unknown)}."}
                 )
         return attrs
 
     def create(self, validated_data):
         validated_data["created_by"] = self.context["request"].user
         return super().create(validated_data)
+
+
+class FormulaPreviewSerializer(serializers.Serializer):
+    """Validates the body for `FormulaPreviewView` — an expression to
+    validate/evaluate before it's ever saved as a `FormulaDefinition`."""
+
+    expression = serializers.JSONField()
+    computed_metric_type = serializers.IntegerField(required=False, allow_null=True)
 
 
 class FavoriteReorderSerializer(serializers.Serializer):

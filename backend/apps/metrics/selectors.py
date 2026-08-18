@@ -17,7 +17,7 @@ from django.utils import timezone
 from apps.core.permissions import PermissionService
 
 from .aggregation import DataPoint, RangeSummary, Timeframe, TimeframeUnit, bucketize, summarize
-from .formulas import computed_series
+from .formula_engine import computed_series
 from .models import (
     FavoriteMetric,
     FormulaDefinition,

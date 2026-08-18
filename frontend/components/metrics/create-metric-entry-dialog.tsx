@@ -17,6 +17,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { ApiError, metricEntries } from "@/lib/api";
 import { metricAggregatePrefixKey, metricEntriesQueryKey } from "@/lib/query-keys";
@@ -36,6 +43,7 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
   const [textValue, setTextValue] = useState("");
   const [booleanValue, setBooleanValue] = useState(false);
   const [dateValue, setDateValue] = useState("");
+  const [choiceValue, setChoiceValue] = useState("");
   const [note, setNote] = useState("");
   const [recordedAt, setRecordedAt] = useState(() => toLocalInputValue(new Date()));
 
@@ -44,6 +52,7 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
     setTextValue("");
     setBooleanValue(false);
     setDateValue("");
+    setChoiceValue("");
     setNote("");
     setRecordedAt(toLocalInputValue(new Date()));
   }
@@ -64,6 +73,10 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
+    if (metricType.value_type === "choice" && !choiceValue) {
+      toast.error(t("choiceRequired"));
+      return;
+    }
     const value =
       metricType.value_type === "number"
         ? Number(numberValue)
@@ -71,7 +84,9 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
           ? booleanValue
           : metricType.value_type === "date"
             ? dateValue
-            : textValue;
+            : metricType.value_type === "choice"
+              ? choiceValue
+              : textValue;
     const parsed = createMetricEntrySchema.safeParse({
       metric_type: metricType.id,
       value,
@@ -137,6 +152,27 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
                   onChange={(e) => setDateValue(e.target.value)}
                   required
                 />
+              </div>
+            )}
+            {metricType.value_type === "choice" && (
+              <div className="space-y-2">
+                <Label>{t("value")}</Label>
+                <Select
+                  items={Object.fromEntries(metricType.choices.map((c) => [c.code, c.label]))}
+                  value={choiceValue}
+                  onValueChange={(v) => setChoiceValue(v ?? "")}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={t("choicePlaceholder")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {metricType.choices.map((choice) => (
+                      <SelectItem key={choice.code} value={choice.code}>
+                        {choice.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             )}
             <div className="space-y-2">

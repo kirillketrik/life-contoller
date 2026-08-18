@@ -86,13 +86,23 @@ This is the foundational abstraction for the whole app — **not** hardcoded to 
 types (weight, blood sugar, insulin dose, water intake, etc. are all just data).
 
 - **`MetricType`** (admin-defined): `name`, `unit`, `value_type` (`number` / `text` / `boolean` /
-  `date`), optional `aggregation` hint (`sum` / `last` / `avg`), `is_computed` (marks a virtual
-  metric type whose values are derived via a `FormulaDefinition` rather than logged directly —
-  see "Computed metrics" below), `created_by`.
+  `date` / `choice`), optional `aggregation` hint (`sum` / `last` / `avg`), `is_computed` (marks a
+  virtual metric type whose values are derived via a `FormulaDefinition` rather than logged
+  directly — see "Computed metrics" below), `created_by`.
+- **`MetricTypeChoice`**: the fixed option list for a `choice`-valued `MetricType` (e.g. Sex:
+  male/female; Activity Level: sedentary/light/moderate/active/very_active). Each option has a
+  stable `code` (what `MetricEntry.value` stores and what formulas compare against — never shown
+  to the user), a Russian `label`, and an optional `numeric_value` — set it when the option should
+  feed a calculation as a number (Activity Level's TDEE multiplier), leave it null when the option
+  is only ever compared by code (Sex, branched on in a formula's `if/then/else`). Created/replaced
+  atomically with its `MetricType` via `apps/metrics/services.py` (see "Backend layering
+  convention" below) — nested writes on `MetricTypeSerializer`, not a separate endpoint.
 - **`MetricEntry`**: FK to `MetricType`, FK to the owning `User`, `value` (`JSONField` — shape
-  depends on `value_type`), optional `context` (`JSONField` — free-form metadata such as
-  `{"reason": "post-meal", "injection_site": "abdomen"}`), `recorded_at` timestamp. Never created
-  for a computed `MetricType` (enforced in `MetricEntrySerializer.validate`).
+  depends on `value_type`; for `choice` it's the option's `code`, validated against the metric
+  type's actual options in `MetricEntrySerializer`), optional `context` (`JSONField` — free-form
+  metadata such as `{"reason": "post-meal", "injection_site": "abdomen"}`), `recorded_at`
+  timestamp. Never created for a computed `MetricType` (enforced in
+  `MetricEntrySerializer.validate`).
 - **`MetricThreshold`**: per-user, per-`MetricType` `lower_bound`/`upper_bound` (`FloatField`,
   either independently nullable), one row max per (user, metric type). Powers the "% time in
   range" stat — see "Timeframe aggregation" below.
@@ -173,32 +183,84 @@ series (see below).
   personal, so even admins only ever see their own series here (unlike the `MetricEntry` list
   endpoint, which admins can widen to everyone).
 
-### Computed metrics (formulas)
+### Computed metrics (unified formula engine)
 A computed `MetricType` (`is_computed=True`) has no `MetricEntry` rows. Instead, `FormulaDefinition`
-(one row per computed metric type, admin-defined) says which built-in formula to run and which
-input `MetricType`s to pull values from — `apps/metrics/formulas.py` does the evaluation:
+(one row per computed metric type, admin-defined) holds an `expression` — a small AST (JSON) —
+that `apps/metrics/formula_engine/` parses, validates, and evaluates. There is no more hardcoded
+per-formula Python (the old `apps/metrics/formulas.py` + `FormulaDefinition.formula_key`/
+`input_mapping` are gone) — BMI, body-fat % (Navy method), and TDEE (Mifflin-St Jeor) are now
+ordinary seeded `FormulaDefinition` rows on this same engine, same as any admin-authored formula.
 
-- **`as_of_value(metric_type_id, user, at)`** — the input's most recent value at or before
-  timestamp `at`, for `user`. Missing data yields `None`, never a default/fake value.
-- **`evaluate_formula(formula_definition, user, at)`** — resolves every required input via
-  `as_of_value` at the same timestamp `at`, then calls the formula's compute function. Returns
-  `None` if any input the current branch actually needs (e.g. hip circumference only matters for
-  the female branch of `body_fat_navy`) has no value yet.
-- **`computed_series(formula_definition, user, range_start, range_end)`** — evaluates the formula
-  at every timestamp any of its inputs has an entry at within the range, producing a
-  `list[aggregation.DataPoint]`. This is what makes computed metrics chartable over time (e.g. a
-  BMI trend), not just a single current-value readout — and it's why they flow through the exact
-  same `aggregation.py` pipeline as regular metric types (see `selectors.points_for_metric_type`,
-  which branches on `metric_type.is_computed` but converges on the same `DataPoint` shape either
-  way). The frontend, dashboard, threshold, and time-in-range code paths never need to know a
-  metric type is computed.
-- Built-in formulas today: `bmi` (weight_kg, height_cm), `body_fat_navy` (waist_cm, neck_cm,
-  height_cm, sex, +hip_cm for the female branch — U.S. Navy method), `tdee_mifflin` (weight_kg,
-  height_cm, dob → age derived as-of the evaluation timestamp, sex, activity_level — Mifflin-St
-  Jeor). Adding a new formula: register its required variable names in `FORMULA_INPUT_VARS` and a
-  compute function in `_FORMULA_COMPUTE`.
-- `sex`/`activity_level`/date-of-birth are plain `MetricType`s (text/date), not a bespoke user
-  profile system — consistent with "new tracked data is a `MetricType` row, not a new model".
+**Why an AST, not a string expression evaluated via `eval`**: a raw string is the right *mental*
+model for a formula but the wrong *storage* model — injection risk, and no structural guarantee
+the thing even parses. The builder UI (below) composes the tree visually; the stored JSON is
+parsed by a strict recursive validator (`formula_engine.nodes.parse_node`) before it's ever
+evaluated.
+
+- **`formula_engine/nodes.py`** — the node types (`metric`, `constant`, `binary_op` for `+ - * /
+  ^`, `unary_op` for `sqrt abs neg`, `function` for `min max round age log10`, `comparison` for
+  `== != < > <= >=`, `conditional` for `if/then/else`) and `parse_node`, a strict parser that
+  rejects unknown node types/ops/arity. `age` and `log10` are engine additions beyond the
+  builder's basic palette (sqrt/abs/round): `age(dob_metric)` generalizes the old
+  `formulas.py` dob-special-case (TDEE needs age-from-date-of-birth, and there's no named-variable
+  system anymore to special-case around), `log10` is required to reproduce the Navy body-fat %
+  formula's logarithms.
+- **`formula_engine/interpreter.py`** — `evaluate_node(node, resolver)`, a recursive
+  isinstance-dispatch visitor (the architecture policy's "visitor pattern" home case: interpreting
+  an AST). Division by zero and any unresolved (`None`) input propagate as `None` at every step —
+  never raises, never substitutes a default, same rule as before this engine existed.
+- **`formula_engine/resolvers.py`** — `AsOfResolver(user, at)` resolves a `metric` leaf: for a
+  non-computed metric type, the most-recent `MetricEntry.value` at/before `at` (choice-valued
+  metrics resolve to their option's `numeric_value` if set, else its `code` — this is what lets
+  Activity Level resolve as a number and Sex resolve as a comparable string, with no extra AST
+  concept needed); for a computed metric type, recursively evaluates *its own* `FormulaDefinition`
+  at the same `at` (cycle-guarded), which is how formulas can depend on other formulas.
+- **`formula_engine/validation.py`** — `validate_expression(expression, computed_metric_type_id)`,
+  called from `FormulaDefinitionSerializer.validate` and the preview endpoint: structural parse,
+  every `metric` leaf's id must reference an existing `MetricType` (`missing_metric_type` — this
+  is the full extent of "missing dependency" validation: a formula may be saved before anyone has
+  logged data for its inputs, live preview just shows no value yet for that case), a literal `x /
+  0` anywhere in the tree (`division_by_zero`), and a circular-reference check across the
+  transitive metric-type dependency graph (`circular_reference`). Returns stable error `code`s
+  (not prose) so the frontend maps each one to Russian copy independently.
+- **`formula_engine/series.py`** — `evaluate_formula`/`computed_series`, the same public contract
+  `apps/metrics/selectors.points_for_metric_type` already called on the old module (only the
+  import path changed): `computed_series` finds the transitive closure of **base** (non-computed)
+  metric types a formula depends on, evaluates at every timestamp any of them has an entry at, and
+  drops `None`s — this is what makes computed metrics chartable over time, not just a
+  single-current-value readout, through the exact same `aggregation.py` pipeline as regular
+  metric types.
+- **`formula_engine/builtins.py`** — pure functions building the BMI/body-fat-navy/TDEE-Mifflin
+  expression dicts from metric-type ids, shared by `seed_metrics.py` (fresh installs) and the
+  `0007_migrate_formula_expressions_data` migration (which converted every pre-engine
+  `FormulaDefinition` row using the same builders).
+- `POST /api/formula-definitions/preview/` (`FormulaPreviewView`, admin-only like the rest of
+  formula editing) validates and, if structurally valid, evaluates a **not-yet-saved** expression
+  for the requesting admin's own current data — one endpoint powers both the builder's live
+  preview and "reject with a clear error before saving".
+- `sex`/`activity_level`/date-of-birth are plain `MetricType`s (`choice`/`choice`/`date`), not a
+  bespoke user profile system — consistent with "new tracked data is a `MetricType` row, not a new
+  model".
+
+**Builder UI** (`frontend/components/metrics/formula-builder/`, replaces the old
+`create-formula-definition-dialog.tsx`): a drag-and-drop canvas (`@dnd-kit/core`) with a metrics
+palette (searchable, draggable chips) and an operators palette (arithmetic or comparison chips
+depending on context, plus click-to-apply √/abs/round wraps, grouping, and if/then/else). Working
+representation is `frontend/lib/formula-builder/tokens.ts`'s `FlatToken[]` — a flat, linear chip
+sequence per canvas level, easier to render/constrain than the tree directly — compiled to the
+`FormulaNode` AST (`compileToAst`, precedence-climbing, `null` if incomplete) only at the API
+boundary. Editing is **drill-in**: adding a group/function-wrap/conditional inserts an empty
+container and immediately focuses into it (breadcrumb navigation moves back out), rather than a
+free-form "select a range of chips and wrap them" interaction. **Scope for this pass**: create
+only, like the rest of the formulas UI before it (no edit-in-builder / AST→FlatToken decompile
+built yet — a reasonable named follow-up, not a half-finished feature); the palette exposes
+arithmetic ops + √/abs/round + grouping + if/then/else, not the engine's full `min`/`max`/`log10`/
+`age` (those remain reachable by hand-authoring an `expression`, e.g. via Django admin, same as
+how the built-in formulas use them). Read-only Russian rendering of an already-saved formula (the
+formulas list page) is `frontend/lib/formula-builder/render-node.ts`'s
+`renderFormulaNodeRussian` — walks the tree directly (not through `FlatToken`) and always
+parenthesizes nested `binary_op`/`comparison` children, trading a few redundant parens for a
+guarantee the displayed formula can never be misread with the wrong operator precedence.
 
 ### Backend layering convention (selectors / services)
 - **`selectors.py`** (per app, e.g. `backend/apps/metrics/selectors.py`) holds all read-query
@@ -206,7 +268,10 @@ input `MetricType`s to pull values from — `apps/metrics/formulas.py` does the 
   This is where ownership/visibility rules (e.g. "admins see everyone's entries, everyone else
   sees only their own") live, in one place per resource.
 - A `services.py` per app (write-side logic beyond what a serializer's `create`/`update` can
-  reasonably hold) will be introduced the first time a feature needs one — none has needed it yet.
+  reasonably hold) is introduced the first time a feature needs one — `apps/metrics/services.py`
+  is the first: `create_metric_type_with_choices`/`update_metric_type_choices` wrap the
+  `MetricType` + `MetricTypeChoice` nested write in a transaction, called from
+  `MetricTypeSerializer.create`/`update` rather than doing the nested-write logic inline.
 
 ### Infrastructure set up ahead of need
 Celery + Redis and MinIO are wired up (broker/result backend, worker service, S3-compatible
@@ -289,6 +354,32 @@ aren't obvious from the code alone:
   line endings from a Windows checkout make `sh` inside the Linux container fail to parse `set -e`,
   crashing the backend container on startup.
 
+Decisions made during the choice-metrics/unit-localization/formula-engine work
+(`feature/formula-engine`):
+
+- **AST JSON over a string expression + `eval`**, for `FormulaDefinition.expression` — see
+  "Computed metrics" above. The builder UI's `FlatToken[]` working representation is a deliberate
+  second, simpler shape (flat per canvas level, not the tree) that only compiles to the real AST
+  at the API boundary, rather than making the UI manipulate the tree directly.
+- **`@dnd-kit/core` + `@dnd-kit/sortable` + `@dnd-kit/utilities`** added as the formula builder's
+  drag-and-drop layer — accessible (keyboard sensor works out of the box, confirmed via manual
+  testing) and far less custom drag-state code than hand-rolled HTML5 DnD would have needed.
+- **Choice-metric options (`MetricTypeChoice`) resolve to `numeric_value` if set, else `code`**,
+  with no separate AST concept for "this leaf is numeric" vs. "this leaf is a comparable code" —
+  the formula engine just always tries `numeric_value` first. This is why Activity Level (every
+  option has a multiplier) drops straight into TDEE's arithmetic and Sex (no option has one)
+  drops straight into an `if/then/else` condition, using the exact same `metric` leaf node either
+  way.
+- **Unit localization was a data migration, not just a `seed_metrics.py` change** — existing dev
+  data already had `MetricType.unit = "kcal"` rows, so `0005_seed_choice_options_data` also
+  updates the TDEE type's unit to `"ккал"` in place (alongside converting Sex/Activity Level to
+  `choice`), and `seed_metrics.py` was updated to match for fresh installs.
+- **Read-only Russian rendering of a saved formula always parenthesizes nested binary/comparison
+  operations** (`render-node.ts`) rather than only when operator precedence requires it — the
+  first version omitted this and rendered BMI's `weight / (height/100)^2` as the flat, misleading
+  `Вес ÷ Рост ÷ 100 ^ 2`; always-parenthesizing trades a few redundant parens for a guarantee it
+  can never be misread.
+
 ## Directory structure
 
 ```
@@ -320,18 +411,19 @@ life-controller/
 │   │   │   ├── serializers.py
 │   │   │   ├── views.py           # LoginView / LogoutView / MeView
 │   │   │   └── urls.py
-│   │   └── metrics/               # MetricType / MetricEntry / MetricThreshold / FormulaDefinition / FavoriteMetric
+│   │   └── metrics/               # MetricType(+Choice) / MetricEntry / MetricThreshold / FormulaDefinition / FavoriteMetric
 │   │       ├── models.py
 │   │       ├── selectors.py       # all read-query logic for this app
+│   │       ├── services.py        # write-side logic beyond a serializer's create/update (nested MetricType+choices writes)
 │   │       ├── aggregation.py     # timeframe bucketing / summary / time-in-range (ORM-free)
-│   │       ├── formulas.py        # computed-metric evaluation engine (BMI, body fat %, TDEE)
+│   │       ├── formula_engine/    # AST-based formula engine — nodes/interpreter/resolvers/validation/series/builtins
 │   │       ├── serializers.py
 │   │       ├── views.py
 │   │       ├── permissions.py
 │   │       ├── admin.py
 │   │       ├── urls.py
 │   │       └── management/commands/
-│   │           └── seed_metrics.py    # idempotent baseline MetricTypes + FormulaDefinitions
+│   │           └── seed_metrics.py    # idempotent baseline MetricTypes (incl. choice options) + FormulaDefinitions
 │   └── tests/                     # all backend tests live here, mirroring apps/
 │       ├── conftest.py            # fixtures shared across every test package
 │       ├── core/
@@ -355,7 +447,9 @@ life-controller/
     │       ├── layout.tsx             # the only layout — html/body, providers, AppSidebar shell
     │       ├── page.tsx               # dashboard: KPI row + chart-card grid
     │       ├── login/page.tsx
-    │       ├── formulas/page.tsx      # FormulaDefinition list + create (admin-only, incl. reads)
+    │       ├── formulas/
+    │       │   ├── page.tsx           # FormulaDefinition list, Russian-rendered (admin-only, incl. reads)
+    │       │   └── builder/page.tsx   # drag-and-drop formula builder (create-only, see "Computed metrics")
     │       └── metrics/
     │           ├── page.tsx           # MetricType list + create (admin-gated)
     │           └── [id]/page.tsx      # dashboard (chart/summary/time-in-range) + entry list/create
@@ -373,17 +467,18 @@ life-controller/
     │   │   ├── metric-dashboard.tsx         # timeframe selector + chart + summary stats
     │   │   ├── threshold-config.tsx         # per-user threshold dialog + useMetricThreshold hook
     │   │   ├── favorite-toggle.tsx          # star toggle button + useIsFavoriteMetric hook
-    │   │   ├── create-formula-definition-dialog.tsx
-    │   │   ├── create-metric-entry-dialog.tsx
-    │   │   └── create-metric-type-dialog.tsx
+    │   │   ├── create-metric-entry-dialog.tsx     # renders a choice <Select> for value_type="choice"
+    │   │   ├── create-metric-type-dialog.tsx      # incl. the choice-option row editor
+    │   │   └── formula-builder/             # canvas/palettes/preview + use-formula-builder.ts state hook
     │   ├── auth-provider.tsx        # current-user context, backed by TanStack Query
     │   ├── query-provider.tsx
     │   ├── theme-provider.tsx
     │   └── theme-toggle.tsx
     └── lib/
         ├── api.ts                   # typed API client — parses every response with Zod
-        ├── types.ts                 # Zod schemas + inferred TS types
-        └── query-keys.ts            # centralized TanStack Query key factories
+        ├── types.ts                 # Zod schemas + inferred TS types (incl. the FormulaNode AST schema)
+        ├── query-keys.ts            # centralized TanStack Query key factories
+        └── formula-builder/         # tokens.ts (FlatToken model + compile), render-node.ts (read-only AST render)
 ```
 
 ## Running locally
@@ -407,10 +502,11 @@ First-time setup (migrations run automatically on backend startup; you still nee
 docker compose exec backend python manage.py createsuperuser
 ```
 
-Seed baseline `MetricType`s/`FormulaDefinition`s (height, sex, activity level, neck/waist/hip
-circumference, date of birth, weight, plus the `bmi`/`body_fat_navy`/`tdee_mifflin`
-`FormulaDefinition`s wired to them — see `apps/metrics/management/commands/seed_metrics.py`).
-Idempotent (matches on `MetricType.name`), safe to re-run:
+Seed baseline `MetricType`s/`FormulaDefinition`s (height, sex + activity level as `choice` types
+with their options, neck/waist/hip circumference, date of birth, weight, plus the
+`bmi`/`body_fat_navy`/`tdee_mifflin` `FormulaDefinition`s wired to them on the AST formula engine
+— see `apps/metrics/management/commands/seed_metrics.py`). Idempotent (matches on
+`MetricType.name`/`MetricTypeChoice.code`), safe to re-run:
 
 ```bash
 docker compose exec backend python manage.py seed_metrics
@@ -452,6 +548,7 @@ Installing a new package or shadcn component works the same way, e.g.
 | Dashboards & computed metrics (Lightweight Charts candlestick/line dashboard with timeframe selector, timeframe-aggregation API, per-user `MetricThreshold` + time-in-range stat, `date` value type, computed `MetricType`s via `FormulaDefinition`/`bmi`/`body_fat_navy`/`tdee_mifflin`, admin-only formulas UI) | `feature/metrics-module` | Implemented, manually verified end-to-end via browser (chart in light/dark, timeframe controls, threshold + time-in-range, BMI computed end-to-end from Weight/Height entries, admin-only formulas gating checked both in the UI and directly against the API) |
 | UI redesign, localization & DX (fixed sidebar with collapsible nav + user footer menu; dashboard landing page with KPI cards + chart-card grid via new `GET /api/dashboard-summary/`; Geist Variable global font; Russian-first `next-intl` localization across every page/component incl. shadcn primitives; 4 project skills — `ui-design`/`architecture`/`crud-resource`/`dashboard-chart-card`) | `feature/ui-redesign-i18n` (branched off `main`, which was created from `feature/metrics-module`'s tip) | Implemented, manually verified end-to-end via browser (Russian copy on every page, sidebar collapse/expand + active-item highlight + admin-group gating, metric-type create flow, dashboard KPI/chart cards with real data, light/dark theme); backend: 96/96 tests passing incl. 4 new for `dashboard-summary`, `ruff check .` clean after fixing a pre-existing exclude-config bug; frontend: `eslint`/`tsc` clean |
 | Favorite metric charts on the dashboard (`FavoriteMetric` per-user through-model; favorite/unfavorite/list/reorder actions on `MetricTypeViewSet`, ownership-scoped; dashboard "Избранное" section reusing `ChartCard`+`MetricChart`, capped at 8 with a "N of M" note; star toggle on the metric detail page and every favorite card, optimistic with rollback) | `feature/favorite-metrics` | Implemented, manually verified end-to-end via browser as two different users (favorite/unfavorite/idempotency, per-user scoping — one user's favorites and chart data never show another's, computed-metric-type favoriting via BMI/TDEE, toggle state in sync between the detail page and dashboard card); backend: 111/111 tests passing incl. 15 new for favorites, `ruff check .` clean; frontend: `eslint`/`tsc` clean. Reorder endpoint is implemented+tested but not yet wired to any frontend drag-and-drop UI — noted as a follow-up above. |
+| Choice-type metrics (`MetricType.value_type="choice"` + `MetricTypeChoice`, Sex/Activity Level converted to it), unit localization (`kcal`→`ккал`), and a unified AST formula engine (`apps/metrics/formula_engine/` replaces hardcoded per-formula Python; BMI/body-fat/TDEE reseeded as ordinary `FormulaDefinition` rows) with a drag-and-drop visual builder (`@dnd-kit`, create-only) incl. live preview and save-time validation (missing metric type / division by zero / circular reference) | `feature/formula-engine` | Implemented, manually verified end-to-end via browser (choice metric type + option creation, choice-select entry logging, drag-and-drop formula build with live preview computing a real value, save + Russian-rendered display on the formulas list, precedence-correct parenthesization); backend: 139/139 tests passing incl. new formula-engine/choice-metric suites, `ruff check .` clean; frontend: `eslint`/`tsc` clean |
 
 `MetricEntry` and `MetricThreshold` are **ownership-based**, not admin-gated: any authenticated
 user creates/edits/deletes their own entries and thresholds; only `MetricType` definitions and

@@ -1,10 +1,19 @@
 import { z } from "zod";
 
-export const valueTypeSchema = z.enum(["number", "text", "boolean", "date"]);
+export const valueTypeSchema = z.enum(["number", "text", "boolean", "date", "choice"]);
 export type ValueType = z.infer<typeof valueTypeSchema>;
 
 export const aggregationSchema = z.enum(["sum", "last", "avg", ""]);
 export type Aggregation = z.infer<typeof aggregationSchema>;
+
+export const choiceOptionSchema = z.object({
+  id: z.number(),
+  code: z.string(),
+  label: z.string(),
+  numeric_value: z.number().nullable(),
+  order: z.number(),
+});
+export type ChoiceOption = z.infer<typeof choiceOptionSchema>;
 
 export const metricTypeSchema = z.object({
   id: z.number(),
@@ -16,16 +25,37 @@ export const metricTypeSchema = z.object({
   created_by: z.number().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
+  choices: z.array(choiceOptionSchema),
 });
 export type MetricType = z.infer<typeof metricTypeSchema>;
 
-export const createMetricTypeSchema = z.object({
-  name: z.string().trim().min(1, "Name is required"),
-  unit: z.string().trim(),
-  value_type: valueTypeSchema,
-  aggregation: aggregationSchema,
-  is_computed: z.boolean().optional(),
+export const createChoiceOptionSchema = z.object({
+  code: z.string().trim().min(1, "Code is required"),
+  label: z.string().trim().min(1, "Label is required"),
+  numeric_value: z.number().nullable().optional(),
+  order: z.number(),
 });
+export type CreateChoiceOptionInput = z.infer<typeof createChoiceOptionSchema>;
+
+export const createMetricTypeSchema = z
+  .object({
+    name: z.string().trim().min(1, "Name is required"),
+    unit: z.string().trim(),
+    value_type: valueTypeSchema,
+    aggregation: aggregationSchema,
+    is_computed: z.boolean().optional(),
+    choices: z.array(createChoiceOptionSchema).optional(),
+  })
+  .refine(
+    (data) => {
+      if (data.value_type !== "choice") return true;
+      const choices = data.choices ?? [];
+      if (choices.length === 0) return false;
+      const codes = choices.map((choice) => choice.code);
+      return new Set(codes).size === codes.length;
+    },
+    { message: "A choice metric type needs at least one option with a unique code", path: ["choices"] },
+  );
 export type CreateMetricTypeInput = z.infer<typeof createMetricTypeSchema>;
 
 export const metricValueSchema = z.union([z.number(), z.string(), z.boolean()]);
@@ -130,20 +160,70 @@ export const createMetricThresholdSchema = z
   });
 export type CreateMetricThresholdInput = z.infer<typeof createMetricThresholdSchema>;
 
-export const formulaKeySchema = z.enum(["bmi", "body_fat_navy", "tdee_mifflin"]);
-export type FormulaKey = z.infer<typeof formulaKeySchema>;
+export const BINARY_OPS = ["+", "-", "*", "/", "^"] as const;
+export const UNARY_OPS = ["sqrt", "abs", "neg"] as const;
+export const FUNCTION_NAMES = ["min", "max", "round", "age", "log10"] as const;
+export const COMPARISON_OPS = ["==", "!=", "<", ">", "<=", ">="] as const;
 
-export const FORMULA_INPUT_VARS: Record<FormulaKey, readonly string[]> = {
-  bmi: ["weight_kg", "height_cm"],
-  body_fat_navy: ["waist_cm", "neck_cm", "height_cm", "sex", "hip_cm"],
-  tdee_mifflin: ["weight_kg", "height_cm", "dob", "sex", "activity_level"],
-};
+export type BinaryOp = (typeof BINARY_OPS)[number];
+export type UnaryOp = (typeof UNARY_OPS)[number];
+export type FunctionName = (typeof FUNCTION_NAMES)[number];
+export type ComparisonOp = (typeof COMPARISON_OPS)[number];
+
+/** Mirrors `apps.metrics.formula_engine.nodes` 1:1 — see that module for the
+ * authoritative schema. Stored as JSON on `FormulaDefinition.expression`;
+ * never evaluated as a string on either side. */
+export type FormulaNode =
+  | { type: "metric"; metric_type_id: number }
+  | { type: "constant"; value: number | string | boolean | null }
+  | { type: "binary_op"; op: BinaryOp; left: FormulaNode; right: FormulaNode }
+  | { type: "unary_op"; op: UnaryOp; operand: FormulaNode }
+  | { type: "function"; name: FunctionName; args: FormulaNode[] }
+  | { type: "comparison"; op: ComparisonOp; left: FormulaNode; right: FormulaNode }
+  | { type: "conditional"; condition: FormulaNode; then: FormulaNode; else: FormulaNode };
+
+export const formulaNodeSchema: z.ZodType<FormulaNode> = z.lazy(() =>
+  z.discriminatedUnion("type", [
+    z.object({ type: z.literal("metric"), metric_type_id: z.number() }),
+    z.object({
+      type: z.literal("constant"),
+      value: z.union([z.number(), z.string(), z.boolean(), z.null()]),
+    }),
+    z.object({
+      type: z.literal("binary_op"),
+      op: z.enum(BINARY_OPS),
+      left: formulaNodeSchema,
+      right: formulaNodeSchema,
+    }),
+    z.object({
+      type: z.literal("unary_op"),
+      op: z.enum(UNARY_OPS),
+      operand: formulaNodeSchema,
+    }),
+    z.object({
+      type: z.literal("function"),
+      name: z.enum(FUNCTION_NAMES),
+      args: z.array(formulaNodeSchema),
+    }),
+    z.object({
+      type: z.literal("comparison"),
+      op: z.enum(COMPARISON_OPS),
+      left: formulaNodeSchema,
+      right: formulaNodeSchema,
+    }),
+    z.object({
+      type: z.literal("conditional"),
+      condition: formulaNodeSchema,
+      then: formulaNodeSchema,
+      else: formulaNodeSchema,
+    }),
+  ]),
+);
 
 export const formulaDefinitionSchema = z.object({
   id: z.number(),
   computed_metric_type: z.number(),
-  formula_key: formulaKeySchema,
-  input_mapping: z.record(z.string(), z.number()),
+  expression: formulaNodeSchema,
   created_by: z.number().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -152,10 +232,21 @@ export type FormulaDefinition = z.infer<typeof formulaDefinitionSchema>;
 
 export const createFormulaDefinitionSchema = z.object({
   computed_metric_type: z.number(),
-  formula_key: formulaKeySchema,
-  input_mapping: z.record(z.string(), z.number()),
+  expression: formulaNodeSchema,
 });
 export type CreateFormulaDefinitionInput = z.infer<typeof createFormulaDefinitionSchema>;
+
+export const formulaErrorSchema = z.object({
+  code: z.string(),
+  detail: z.string().optional(),
+});
+export type FormulaValidationError = z.infer<typeof formulaErrorSchema>;
+
+export const formulaPreviewResponseSchema = z.object({
+  value: z.union([z.number(), z.string(), z.boolean(), z.null()]),
+  errors: z.array(formulaErrorSchema),
+});
+export type FormulaPreviewResponse = z.infer<typeof formulaPreviewResponseSchema>;
 
 export const dashboardEntriesByTypeSchema = z.object({
   metric_type_name: z.string(),

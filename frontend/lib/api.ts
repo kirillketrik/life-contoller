@@ -14,6 +14,9 @@ import {
   favoriteMetricListSchema,
   type FormulaDefinition,
   formulaDefinitionSchema,
+  type FormulaNode,
+  type FormulaPreviewResponse,
+  formulaPreviewResponseSchema,
   type LoginInput,
   type MetricEntry,
   metricEntrySchema,
@@ -202,4 +205,9 @@ export const formulaDefinitions = {
       body: JSON.stringify(data),
     }),
   delete: (id: number) => requestVoid(`/api/formula-definitions/${id}/`, { method: "DELETE" }),
+  preview: (expression: FormulaNode, computedMetricType?: number): Promise<FormulaPreviewResponse> =>
+    request(formulaPreviewResponseSchema, "/api/formula-definitions/preview/", {
+      method: "POST",
+      body: JSON.stringify({ expression, computed_metric_type: computedMetricType ?? null }),
+    }),
 };
