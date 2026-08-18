@@ -42,9 +42,17 @@ function toUnixSeconds(iso: string): UTCTimestamp {
 /** Candlestick if a meaningful share of buckets actually have spread
  * (high !== low, i.e. more than one distinct reading in the bucket);
  * otherwise the data is sparse (roughly one point per bucket, e.g. a daily
- * weight log) and a line reads far more cleanly than flat-bodied candles. */
-function shouldRenderCandlesticks(buckets: OHLCBucket[]): boolean {
+ * weight log) and a line reads far more cleanly than flat-bodied candles.
+ *
+ * Only applies at day/hour/minute granularity — week/month/year buckets
+ * aggregate many readings each almost by definition (that's the whole point
+ * of a long-range overview), so the spread heuristic would trigger
+ * candlesticks on every long-range chart regardless of data shape. Those
+ * coarse buckets always render as a line — same as the dashboard's own
+ * 12-month trend chart. */
+function shouldRenderCandlesticks(buckets: OHLCBucket[], timeframeUnit: TimeframeUnit): boolean {
   if (buckets.length === 0) return false;
+  if (timeframeUnit === "week" || timeframeUnit === "month" || timeframeUnit === "year") return false;
   const bucketsWithSpread = buckets.filter((bucket) => bucket.high !== bucket.low).length;
   return bucketsWithSpread / buckets.length > 0.2;
 }
@@ -78,7 +86,7 @@ export function MetricChart({ buckets, timeframeUnit }: { buckets: OHLCBucket[];
 
     const sortedBuckets = [...buckets].sort((a, b) => a.bucket_start.localeCompare(b.bucket_start));
 
-    if (shouldRenderCandlesticks(sortedBuckets)) {
+    if (shouldRenderCandlesticks(sortedBuckets, timeframeUnit)) {
       const series = chart.addSeries(CandlestickSeries, {
         upColor: colors.up,
         downColor: colors.down,

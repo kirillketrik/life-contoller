@@ -99,6 +99,7 @@ export function CreateFormulaDefinitionDialog() {
             <div className="space-y-2">
               <Label>{t("computedMetricType")}</Label>
               <Select
+                items={Object.fromEntries(computedTypes.map((type) => [String(type.id), type.name]))}
                 value={computedMetricTypeId}
                 onValueChange={(v) => setComputedMetricTypeId(v ?? "")}
               >
@@ -120,6 +121,12 @@ export function CreateFormulaDefinitionDialog() {
             <div className="space-y-2">
               <Label>{t("formulaLabel")}</Label>
               <Select
+                items={Object.fromEntries(
+                  (Object.keys(FORMULA_LABEL_KEYS) as FormulaKey[]).map((key) => [
+                    key,
+                    t(FORMULA_LABEL_KEYS[key]),
+                  ]),
+                )}
                 value={formulaKey}
                 onValueChange={(v) => {
                   setFormulaKey(v as FormulaKey);
@@ -142,6 +149,7 @@ export function CreateFormulaDefinitionDialog() {
               <div className="space-y-2" key={variable}>
                 <Label>{variable}</Label>
                 <Select
+                  items={Object.fromEntries(inputTypes.map((type) => [String(type.id), type.name]))}
                   value={inputMapping[variable] ?? ""}
                   onValueChange={(v) =>
                     setInputMapping((prev) => ({ ...prev, [variable]: v ?? "" }))
