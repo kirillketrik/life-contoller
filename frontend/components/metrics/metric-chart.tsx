@@ -8,6 +8,7 @@ import {
   createChart,
   type UTCTimestamp,
 } from "lightweight-charts";
+import { useTranslations } from "next-intl";
 import { useTheme } from "next-themes";
 import { useEffect, useRef } from "react";
 
@@ -49,6 +50,7 @@ function shouldRenderCandlesticks(buckets: OHLCBucket[]): boolean {
 }
 
 export function MetricChart({ buckets, timeframeUnit }: { buckets: OHLCBucket[]; timeframeUnit: TimeframeUnit }) {
+  const t = useTranslations("metricChart");
   const containerRef = useRef<HTMLDivElement>(null);
   const { resolvedTheme } = useTheme();
 
@@ -111,7 +113,7 @@ export function MetricChart({ buckets, timeframeUnit }: { buckets: OHLCBucket[];
   if (buckets.length === 0) {
     return (
       <div className="flex h-80 w-full items-center justify-center text-sm text-muted-foreground">
-        No data in this range.
+        {t("noData")}
       </div>
     );
   }

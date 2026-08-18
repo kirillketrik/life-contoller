@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -36,6 +37,7 @@ export function ThresholdConfigDialog({
   metricType: MetricType;
   threshold: MetricThreshold | undefined;
 }) {
+  const t = useTranslations("threshold");
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [lower, setLower] = useState(threshold?.lower_bound?.toString() ?? "");
@@ -61,18 +63,18 @@ export function ThresholdConfigDialog({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: METRIC_THRESHOLDS_QUERY_KEY });
       queryClient.invalidateQueries({ queryKey: metricAggregatePrefixKey(metricType.id) });
-      toast.success("Range saved");
+      toast.success(t("saved"));
       setOpen(false);
     },
     onError: (error) => {
-      toast.error(error instanceof ApiError ? error.message : "Failed to save range");
+      toast.error(error instanceof ApiError ? error.message : t("saveFailed"));
     },
   });
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!lower.trim() && !upper.trim()) {
-      toast.error("Set at least one of lower or upper bound");
+      toast.error(t("needBound"));
       return;
     }
     mutation.mutate();
@@ -83,23 +85,20 @@ export function ThresholdConfigDialog({
       <DialogTrigger
         render={
           <Button variant="outline" size="sm">
-            {threshold ? "Edit range" : "Set range"}
+            {threshold ? t("editRange") : t("setRange")}
           </Button>
         }
       />
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>{metricType.name} range</DialogTitle>
-            <DialogDescription>
-              Used to compute % time-in-range on your dashboard. Leave either bound blank if it
-              doesn&apos;t apply.
-            </DialogDescription>
+            <DialogTitle>{t("title", { name: metricType.name })}</DialogTitle>
+            <DialogDescription>{t("description")}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="space-y-2">
               <Label htmlFor="lower-bound">
-                Lower bound {metricType.unit && `(${metricType.unit})`}
+                {t("lowerBound")} {metricType.unit && `(${metricType.unit})`}
               </Label>
               <Input
                 id="lower-bound"
@@ -111,7 +110,7 @@ export function ThresholdConfigDialog({
             </div>
             <div className="space-y-2">
               <Label htmlFor="upper-bound">
-                Upper bound {metricType.unit && `(${metricType.unit})`}
+                {t("upperBound")} {metricType.unit && `(${metricType.unit})`}
               </Label>
               <Input
                 id="upper-bound"
@@ -124,7 +123,7 @@ export function ThresholdConfigDialog({
           </div>
           <DialogFooter>
             <Button type="submit" disabled={mutation.isPending}>
-              {mutation.isPending ? "Saving..." : "Save"}
+              {mutation.isPending ? t("saving") : t("save")}
             </Button>
           </DialogFooter>
         </form>

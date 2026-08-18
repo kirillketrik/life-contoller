@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -26,13 +27,14 @@ import { ApiError, formulaDefinitions, metricTypes } from "@/lib/api";
 import { FORMULA_DEFINITIONS_QUERY_KEY, METRIC_TYPES_QUERY_KEY } from "@/lib/query-keys";
 import { FORMULA_INPUT_VARS, type FormulaKey } from "@/lib/types";
 
-const FORMULA_LABELS: Record<FormulaKey, string> = {
-  bmi: "BMI",
-  body_fat_navy: "Body fat % (Navy method)",
-  tdee_mifflin: "TDEE (Mifflin-St Jeor)",
+const FORMULA_LABEL_KEYS: Record<FormulaKey, string> = {
+  bmi: "formulaBmi",
+  body_fat_navy: "formulaBodyFat",
+  tdee_mifflin: "formulaTdee",
 };
 
 export function CreateFormulaDefinitionDialog() {
+  const t = useTranslations("formulas");
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [computedMetricTypeId, setComputedMetricTypeId] = useState("");
@@ -58,19 +60,19 @@ export function CreateFormulaDefinitionDialog() {
     mutationFn: formulaDefinitions.create,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: FORMULA_DEFINITIONS_QUERY_KEY });
-      toast.success("Formula definition created");
+      toast.success(t("created"));
       reset();
       setOpen(false);
     },
     onError: (error) => {
-      toast.error(error instanceof ApiError ? error.message : "Failed to create formula definition");
+      toast.error(error instanceof ApiError ? error.message : t("createFailed"));
     },
   });
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (!computedMetricTypeId) {
-      toast.error("Choose a computed metric type");
+      toast.error(t("chooseComputedType"));
       return;
     }
     const mapping: Record<string, number> = {};
@@ -86,25 +88,22 @@ export function CreateFormulaDefinitionDialog() {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button>New formula</Button>} />
+      <DialogTrigger render={<Button>{t("new")}</Button>} />
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>New formula definition</DialogTitle>
-            <DialogDescription>
-              Wire a computed metric type to a built-in formula and the metric types it reads
-              from.
-            </DialogDescription>
+            <DialogTitle>{t("createTitle")}</DialogTitle>
+            <DialogDescription>{t("createDescription")}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="space-y-2">
-              <Label>Computed metric type</Label>
+              <Label>{t("computedMetricType")}</Label>
               <Select
                 value={computedMetricTypeId}
                 onValueChange={(v) => setComputedMetricTypeId(v ?? "")}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="Select..." />
+                  <SelectValue placeholder={t("selectPlaceholder")} />
                 </SelectTrigger>
                 <SelectContent>
                   {computedTypes.map((type) => (
@@ -115,13 +114,11 @@ export function CreateFormulaDefinitionDialog() {
                 </SelectContent>
               </Select>
               {computedTypes.length === 0 && (
-                <p className="text-xs text-muted-foreground">
-                  Create a metric type with &quot;Computed&quot; enabled first.
-                </p>
+                <p className="text-xs text-muted-foreground">{t("createComputedHint")}</p>
               )}
             </div>
             <div className="space-y-2">
-              <Label>Formula</Label>
+              <Label>{t("formulaLabel")}</Label>
               <Select
                 value={formulaKey}
                 onValueChange={(v) => {
@@ -133,9 +130,9 @@ export function CreateFormulaDefinitionDialog() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {(Object.keys(FORMULA_LABELS) as FormulaKey[]).map((key) => (
+                  {(Object.keys(FORMULA_LABEL_KEYS) as FormulaKey[]).map((key) => (
                     <SelectItem key={key} value={key}>
-                      {FORMULA_LABELS[key]}
+                      {t(FORMULA_LABEL_KEYS[key])}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -151,7 +148,7 @@ export function CreateFormulaDefinitionDialog() {
                   }
                 >
                   <SelectTrigger>
-                    <SelectValue placeholder="Select input metric type..." />
+                    <SelectValue placeholder={t("inputPlaceholder")} />
                   </SelectTrigger>
                   <SelectContent>
                     {inputTypes.map((type) => (
@@ -166,7 +163,7 @@ export function CreateFormulaDefinitionDialog() {
           </div>
           <DialogFooter>
             <Button type="submit" disabled={mutation.isPending}>
-              {mutation.isPending ? "Creating..." : "Create"}
+              {mutation.isPending ? t("creating") : t("create")}
             </Button>
           </DialogFooter>
         </form>

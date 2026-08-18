@@ -8,6 +8,8 @@ import {
   type CreateMetricThresholdInput,
   type CreateMetricTypeInput,
   currentUserSchema,
+  type DashboardSummary,
+  dashboardSummarySchema,
   type FormulaDefinition,
   formulaDefinitionSchema,
   type LoginInput,
@@ -169,6 +171,10 @@ export const metricThresholds = {
       body: JSON.stringify(data),
     }),
   delete: (id: number) => requestVoid(`/api/metric-thresholds/${id}/`, { method: "DELETE" }),
+};
+
+export const dashboardSummary = {
+  get: (): Promise<DashboardSummary> => request(dashboardSummarySchema, "/api/dashboard-summary/"),
 };
 
 export const formulaDefinitions = {

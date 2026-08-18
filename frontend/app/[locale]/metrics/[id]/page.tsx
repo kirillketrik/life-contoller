@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { use, useEffect } from "react";
 
 import { useAuth } from "@/components/auth-provider";
@@ -10,19 +10,15 @@ import { MetricDashboard } from "@/components/metrics/metric-dashboard";
 import { ThresholdConfigDialog, useMetricThreshold } from "@/components/metrics/threshold-config";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useRouter } from "@/i18n/navigation";
 import { metricEntries, metricTypes } from "@/lib/api";
 import { metricEntriesQueryKey, metricTypeQueryKey } from "@/lib/query-keys";
 import type { MetricEntry, MetricType } from "@/lib/types";
 
-function formatValue(entry: MetricEntry, metricType: MetricType | undefined): string {
-  if (metricType?.value_type === "boolean") return entry.value ? "Yes" : "No";
-  if (metricType?.unit) return `${entry.value} ${metricType.unit}`;
-  return String(entry.value);
-}
-
 export default function MetricTypeDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const metricTypeId = Number(id);
+  const t = useTranslations("metricDetail");
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
 
@@ -44,6 +40,12 @@ export default function MetricTypeDetailPage({ params }: { params: Promise<{ id:
 
   const threshold = useMetricThreshold(metricTypeId, Boolean(user));
 
+  function formatValue(entry: MetricEntry, metricType: MetricType | undefined): string {
+    if (metricType?.value_type === "boolean") return entry.value ? t("yes") : t("no");
+    if (metricType?.unit) return `${entry.value} ${metricType.unit}`;
+    return String(entry.value);
+  }
+
   if (metricTypeQuery.isLoading) {
     return (
       <div className="space-y-3">
@@ -55,7 +57,7 @@ export default function MetricTypeDetailPage({ params }: { params: Promise<{ id:
 
   const metricType = metricTypeQuery.data;
   if (!metricType) {
-    return <p className="text-sm text-muted-foreground">Metric type not found.</p>;
+    return <p className="text-sm text-muted-foreground">{t("notFound")}</p>;
   }
 
   const chartable = metricType.is_computed || metricType.value_type === "number";
@@ -69,7 +71,7 @@ export default function MetricTypeDetailPage({ params }: { params: Promise<{ id:
           <p className="text-sm text-muted-foreground">
             {metricType.value_type}
             {metricType.unit ? ` · ${metricType.unit}` : ""}
-            {metricType.is_computed ? " · computed" : ""}
+            {metricType.is_computed ? t("computedSuffix") : ""}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -83,14 +85,14 @@ export default function MetricTypeDetailPage({ params }: { params: Promise<{ id:
       {metricType.is_computed ? null : entriesQuery.isLoading ? (
         <Skeleton className="h-64" />
       ) : entries.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No entries logged yet.</p>
+        <p className="text-sm text-muted-foreground">{t("noEntries")}</p>
       ) : (
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Recorded at</TableHead>
-              <TableHead>Value</TableHead>
-              <TableHead>Note</TableHead>
+              <TableHead>{t("recordedAtHeader")}</TableHead>
+              <TableHead>{t("valueHeader")}</TableHead>
+              <TableHead>{t("noteHeader")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>

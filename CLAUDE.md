@@ -32,9 +32,11 @@ that foundation.
 | Media storage | MinIO (S3-compatible), via `django-storages` — wired up ahead of need, no model uses a file field yet |
 | Async / background jobs | Celery + Redis (broker & result backend) |
 | Frontend | Next.js (App Router) + React + TypeScript + Tailwind CSS + shadcn/ui |
-| Frontend package manager | [pnpm](https://pnpm.io/) — not npm/yarn |
+| Frontend package manager | [pnpm](https://pnpm.io/) — not npm/yarn. **Run all pnpm/shadcn commands through the frontend Docker container** (`docker compose exec frontend pnpm ...`) — Node/pnpm aren't on the host `PATH`, and the container's `node_modules` is a separate named volume from any host install |
 | Frontend data layer | [TanStack Query](https://tanstack.com/query) for server-state/caching, [Zod](https://zod.dev/) for schema validation (API response parsing + form input validation) |
-| Charting | [TradingView Lightweight Charts](https://github.com/tradingview/lightweight-charts) (MIT) — candlestick/line series with built-in zoom/pan and a real time scale |
+| Charting | [TradingView Lightweight Charts](https://github.com/tradingview/lightweight-charts) (MIT) for time-series (candlestick/line/area) — **not** used for categorical breakdowns, see "Architectural decisions" |
+| Typography | [Geist Variable](https://fontsource.org/fonts/geist) via `@fontsource-variable/geist` — global font, wired in `app/[locale]/layout.tsx` + `app/globals.css` |
+| Localization | [next-intl](https://next-intl.dev/) — Russian (`ru`) is the default and only locale today; see "Architectural decisions" for the routing setup |
 | Containerization | Docker + Docker Compose (all services run via `docker compose up`) |
 | Theming | Light + dark mode out of the box (shadcn/ui + `next-themes`), minimalist design |
 
@@ -169,6 +171,82 @@ Celery + Redis and MinIO are wired up (broker/result backend, worker service, S3
 media storage) starting with the metrics feature even though nothing uses them yet (no Celery
 tasks, no file fields), so future features don't require infra work.
 
+## Skills policy
+
+- Before starting any UI work, check for and use a project skill dedicated to
+  professional UI/UX creation (sidebar/nav patterns, dashboard card layout,
+  typography via Geist Variable, spacing, and Russian-first copy). If no such
+  skill exists yet, create one after this redesign and keep it updated as the
+  UI evolves.
+- Before starting any architecture/design work, check for and use a project
+  skill that documents this project's architecture decisions and the design
+  patterns in use (service layer, repository, factory, strategy, etc.). If no
+  such skill exists yet, create one and keep it updated as the architecture
+  evolves.
+- Whenever a development task is repeated (or is likely to recur) — e.g.
+  scaffolding a new CRUD resource, adding a new chart card, adding a new
+  metric type, adding a new localized page — extract it into a reusable skill
+  instead of redoing the work manually each time.
+- Default UI language is Russian; all new UI copy must ship in Russian first.
+- Global font is Geist Variable (`@fontsource-variable/geist`); do not
+  introduce other fonts without updating this policy.
+- Follow Next.js App Router best practices on the frontend and Django/DRF
+  best practices on the backend for all new code.
+
+These four project skills implement the policy today: `.claude/skills/ui-design/SKILL.md`
+(sidebar/dashboard/typography/copy patterns), `.claude/skills/architecture/SKILL.md` (the
+decisions and patterns below, in skill form), `.claude/skills/crud-resource/SKILL.md` (scaffolding
+checklist), and `.claude/skills/dashboard-chart-card/SKILL.md` (adding a dashboard card). Keep
+them updated in the same commit as a change that affects what they document.
+
+## Architectural decisions
+
+Decisions made during the sidebar/dashboard/i18n redesign (`feature/ui-redesign-i18n`) that
+aren't obvious from the code alone:
+
+- **Sidebar built on shadcn's `Sidebar` primitive, not hand-rolled.** It already implements the
+  collapsible-group / icon+label / active-highlight / mobile-offcanvas structure the redesign
+  needed (`components/ui/sidebar.tsx`, installed via `pnpm dlx shadcn add sidebar collapsible
+  avatar separator tooltip sheet`) — reinventing it would have duplicated non-trivial
+  accessibility/state-management work for no benefit.
+- **Chart library split**: Lightweight Charts (time-scale) is used only for genuinely time-series
+  dashboard data (`components/dashboard/monthly-trend-chart.tsx`); categorical breakdowns
+  (`components/dashboard/horizontal-bar-list.tsx`) use plain Tailwind bars instead of forcing a
+  time-axis library to fake a categorical one, or adding a second charting dependency for one
+  simple visual. See the `dashboard-chart-card` skill.
+- **`GET /api/dashboard-summary/`** follows the same "aggregate once, derive many stats" shape as
+  `/aggregate/`: one selector function (`selectors.dashboard_summary_for_user`), one thin
+  `APIView`, a raw dict response — deliberately **no** new output-serializer class, matching
+  `/aggregate/`'s existing convention rather than introducing a new one.
+- **i18n routing**: `next-intl` with `locales: ["ru"]`, `defaultLocale: "ru"`,
+  `localePrefix: "as-needed"` — Russian stays unprefixed (`/metrics`), so adding a second locale
+  later is additive (append to `locales`, add `messages/en.json`) rather than a URL-breaking
+  change. All routes live under `app/[locale]/...`, and `app/[locale]/layout.tsx` is the *only*
+  layout — there's no separate `app/layout.tsx` above it, since Next's root-layout requirement is
+  satisfied by the outermost layout already being under `[locale]` (every route lives under that
+  segment).
+- **`middleware.ts` → `proxy.ts`**: Next.js 16 deprecated the `middleware.ts` file convention in
+  favor of `proxy.ts` (same `next-intl` `createMiddleware(routing)` export). This repo uses
+  `proxy.ts` — don't reintroduce a `middleware.ts`.
+- **No repository/service layer added for the redesign.** The one new backend endpoint
+  (dashboard-summary) fit the existing selectors convention; nothing in this pass needed
+  multi-model transactional writes or swappable data sources, so `services.py` wasn't introduced
+  (see "Backend layering convention" above — it's added the first time a feature actually needs
+  it, not preemptively).
+- **Known tooling quirk, not a code bug**: in dev mode, Turbopack can write a corrupted
+  `.next/dev/types/validator.ts` for the `[locale]` root layout (a duplicated, torn validation
+  block) that breaks a plain `tsc --noEmit`. Verified via `docker compose stop frontend &&
+  docker compose run --rm frontend sh -c "rm -f .next/dev/types/validator.ts && pnpm exec tsc
+  --noEmit"` that the actual project code has zero type errors — the corruption is isolated to
+  that one generated file. If `tsc` reports an error only in that file, it's this, not a regression.
+- **`backend/pyproject.toml`'s `[tool.ruff] exclude`** was fixed to `extend-exclude` — plain
+  `exclude` replaces Ruff's default excludes (including `.venv`) instead of adding to them, which
+  made `ruff check .` scan the entire virtualenv. Always use `extend-exclude` for project-specific
+  exclusions, never `exclude`, unless you deliberately want to lose the defaults.
+- **`backend/docker-entrypoint.sh`** must stay LF-terminated (enforced via `.gitattributes`) — CRLF
+  line endings from a Windows checkout make `sh` inside the Linux container fail to parse `set -e`,
+  crashing the backend container on startup.
+
 ## Directory structure
 
 ```
@@ -176,6 +254,9 @@ life-controller/
 ├── CLAUDE.md
 ├── docker-compose.yml
 ├── .env.example
+├── .gitattributes                # forces LF on *.sh (see "Architectural decisions")
+├── .claude/
+│   └── skills/                   # ui-design, architecture, crud-resource, dashboard-chart-card
 ├── backend/
 │   ├── Dockerfile
 │   ├── pyproject.toml            # uv-managed deps + ruff + pytest config
@@ -216,15 +297,32 @@ life-controller/
 └── frontend/
     ├── Dockerfile
     ├── package.json
+    ├── proxy.ts                     # next-intl createMiddleware(routing) — Next 16's renamed "middleware"
+    ├── i18n/
+    │   ├── routing.ts                # defineRouting: locales, defaultLocale, localePrefix
+    │   ├── request.ts                # getRequestConfig — loads messages/<locale>.json
+    │   └── navigation.ts             # locale-aware Link/usePathname/useRouter (createNavigation)
+    ├── messages/
+    │   └── ru.json                   # all UI copy, namespaced per page/component
     ├── app/
-    │   ├── layout.tsx              # QueryProvider > ThemeProvider > AuthProvider > NavBar
-    │   ├── login/page.tsx
-    │   ├── formulas/page.tsx        # FormulaDefinition list + create (admin-only, incl. reads)
-    │   └── metrics/
-    │       ├── page.tsx             # MetricType list + create (admin-gated)
-    │       └── [id]/page.tsx        # dashboard (chart/summary/time-in-range) + entry list/create
+    │   ├── favicon.ico
+    │   ├── globals.css                # design tokens + --font-sans (Geist Variable)
+    │   └── [locale]/
+    │       ├── layout.tsx             # the only layout — html/body, providers, AppSidebar shell
+    │       ├── page.tsx               # dashboard: KPI row + chart-card grid
+    │       ├── login/page.tsx
+    │       ├── formulas/page.tsx      # FormulaDefinition list + create (admin-only, incl. reads)
+    │       └── metrics/
+    │           ├── page.tsx           # MetricType list + create (admin-gated)
+    │           └── [id]/page.tsx      # dashboard (chart/summary/time-in-range) + entry list/create
     ├── components/
     │   ├── ui/                      # shadcn/ui primitives only
+    │   ├── layout/
+    │   │   └── app-sidebar.tsx      # fixed sidebar: nav groups, admin gating, user footer menu
+    │   ├── dashboard/
+    │   │   ├── chart-card.tsx              # icon+title Card wrapper used by every dashboard card
+    │   │   ├── horizontal-bar-list.tsx     # categorical breakdowns (no time axis — not a chart lib)
+    │   │   └── monthly-trend-chart.tsx     # lightweight-charts area series for the 12-month trend
     │   ├── metrics/                 # feature components
     │   │   ├── metric-chart.tsx             # lightweight-charts candlestick/line wrapper
     │   │   ├── metric-dashboard.tsx         # timeframe selector + chart + summary stats
@@ -270,13 +368,18 @@ docker compose exec backend uv run pytest
 docker compose exec backend uv run ruff check .
 ```
 
-Frontend lint/typecheck (from `frontend/`, requires `pnpm install` locally or run inside the
-`frontend` container):
+Frontend lint/typecheck (run through the `frontend` container — Node/pnpm aren't on the host
+`PATH`, and the container's `node_modules` is a separate named Docker volume from any host
+install):
 
 ```bash
-pnpm exec eslint .
-pnpm exec tsc --noEmit
+docker compose exec frontend pnpm exec eslint .
+docker compose exec frontend pnpm exec tsc --noEmit
 ```
+
+Installing a new package or shadcn component works the same way, e.g.
+`docker compose exec frontend pnpm add <package>` or
+`docker compose exec frontend pnpm dlx shadcn add <component>`.
 
 ## Git workflow
 
@@ -292,6 +395,7 @@ pnpm exec tsc --noEmit
 |---|---|---|
 | Metrics module core (MetricType/MetricEntry backend + centralized permissions + session auth + Docker infra incl. MinIO + frontend CRUD UI with TanStack Query/Zod) | `feature/metrics-module` | Implemented, manually verified end-to-end via browser |
 | Dashboards & computed metrics (Lightweight Charts candlestick/line dashboard with timeframe selector, timeframe-aggregation API, per-user `MetricThreshold` + time-in-range stat, `date` value type, computed `MetricType`s via `FormulaDefinition`/`bmi`/`body_fat_navy`/`tdee_mifflin`, admin-only formulas UI) | `feature/metrics-module` | Implemented, manually verified end-to-end via browser (chart in light/dark, timeframe controls, threshold + time-in-range, BMI computed end-to-end from Weight/Height entries, admin-only formulas gating checked both in the UI and directly against the API) |
+| UI redesign, localization & DX (fixed sidebar with collapsible nav + user footer menu; dashboard landing page with KPI cards + chart-card grid via new `GET /api/dashboard-summary/`; Geist Variable global font; Russian-first `next-intl` localization across every page/component incl. shadcn primitives; 4 project skills — `ui-design`/`architecture`/`crud-resource`/`dashboard-chart-card`) | `feature/ui-redesign-i18n` (branched off `main`, which was created from `feature/metrics-module`'s tip) | Implemented, manually verified end-to-end via browser (Russian copy on every page, sidebar collapse/expand + active-item highlight + admin-group gating, metric-type create flow, dashboard KPI/chart cards with real data, light/dark theme); backend: 96/96 tests passing incl. 4 new for `dashboard-summary`, `ruff check .` clean after fixing a pre-existing exclude-config bug; frontend: `eslint`/`tsc` clean |
 
 `MetricEntry` and `MetricThreshold` are **ownership-based**, not admin-gated: any authenticated
 user creates/edits/deletes their own entries and thresholds; only `MetricType` definitions and

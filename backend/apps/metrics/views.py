@@ -1,9 +1,10 @@
 from datetime import timedelta
 
 from django.utils import timezone
-from rest_framework import status, viewsets
+from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from . import selectors
 from .aggregation import Timeframe, TimeframeUnit, bucketize, summarize, time_in_range_percent
@@ -135,3 +136,13 @@ class FormulaDefinitionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return selectors.formula_definition_list()
+
+
+class DashboardSummaryView(APIView):
+    """KPI counts + chart-card breakdowns for the dashboard landing page, all
+    scoped to the requesting user (personal, like `/aggregate/`)."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response(selectors.dashboard_summary_for_user(user=request.user))

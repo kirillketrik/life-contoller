@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -28,6 +29,7 @@ function toLocalInputValue(date: Date): string {
 }
 
 export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType }) {
+  const t = useTranslations("metricEntry");
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [numberValue, setNumberValue] = useState("");
@@ -51,12 +53,12 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: metricEntriesQueryKey(metricType.id) });
       queryClient.invalidateQueries({ queryKey: metricAggregatePrefixKey(metricType.id) });
-      toast.success("Entry logged");
+      toast.success(t("logged"));
       reset();
       setOpen(false);
     },
     onError: (error) => {
-      toast.error(error instanceof ApiError ? error.message : "Failed to log entry");
+      toast.error(error instanceof ApiError ? error.message : t("logFailed"));
     },
   });
 
@@ -77,7 +79,7 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
       recorded_at: new Date(recordedAt).toISOString(),
     });
     if (!parsed.success) {
-      toast.error(parsed.error.issues[0]?.message ?? "Invalid input");
+      toast.error(parsed.error.issues[0]?.message ?? t("invalid"));
       return;
     }
     mutation.mutate(parsed.data);
@@ -85,17 +87,19 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button>Log entry</Button>} />
+      <DialogTrigger render={<Button>{t("trigger")}</Button>} />
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>Log {metricType.name}</DialogTitle>
-            <DialogDescription>Add a new reading for this metric.</DialogDescription>
+            <DialogTitle>{t("logTitle", { name: metricType.name })}</DialogTitle>
+            <DialogDescription>{t("logDescription")}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             {metricType.value_type === "number" && (
               <div className="space-y-2">
-                <Label htmlFor="value">Value {metricType.unit && `(${metricType.unit})`}</Label>
+                <Label htmlFor="value">
+                  {t("value")} {metricType.unit && `(${metricType.unit})`}
+                </Label>
                 <Input
                   id="value"
                   type="number"
@@ -108,7 +112,7 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
             )}
             {metricType.value_type === "text" && (
               <div className="space-y-2">
-                <Label htmlFor="value">Value</Label>
+                <Label htmlFor="value">{t("value")}</Label>
                 <Input
                   id="value"
                   value={textValue}
@@ -119,13 +123,13 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
             )}
             {metricType.value_type === "boolean" && (
               <div className="flex items-center justify-between">
-                <Label htmlFor="value">Value</Label>
+                <Label htmlFor="value">{t("value")}</Label>
                 <Switch id="value" checked={booleanValue} onCheckedChange={setBooleanValue} />
               </div>
             )}
             {metricType.value_type === "date" && (
               <div className="space-y-2">
-                <Label htmlFor="value">Value</Label>
+                <Label htmlFor="value">{t("value")}</Label>
                 <Input
                   id="value"
                   type="date"
@@ -136,7 +140,7 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
               </div>
             )}
             <div className="space-y-2">
-              <Label htmlFor="recorded-at">Recorded at</Label>
+              <Label htmlFor="recorded-at">{t("recordedAt")}</Label>
               <Input
                 id="recorded-at"
                 type="datetime-local"
@@ -146,13 +150,13 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="note">Note (optional)</Label>
+              <Label htmlFor="note">{t("note")}</Label>
               <Input id="note" value={note} onChange={(e) => setNote(e.target.value)} />
             </div>
           </div>
           <DialogFooter>
             <Button type="submit" disabled={mutation.isPending}>
-              {mutation.isPending ? "Saving..." : "Save"}
+              {mutation.isPending ? t("saving") : t("save")}
             </Button>
           </DialogFooter>
         </form>

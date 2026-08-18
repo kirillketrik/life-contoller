@@ -1,17 +1,19 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useEffect } from "react";
 
 import { useAuth } from "@/components/auth-provider";
 import { CreateFormulaDefinitionDialog } from "@/components/metrics/create-formula-definition-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useRouter } from "@/i18n/navigation";
 import { formulaDefinitions, metricTypes } from "@/lib/api";
 import { FORMULA_DEFINITIONS_QUERY_KEY, METRIC_TYPES_QUERY_KEY } from "@/lib/query-keys";
 
 export default function FormulasPage() {
+  const t = useTranslations("formulas");
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
 
@@ -33,7 +35,7 @@ export default function FormulasPage() {
   });
 
   if (!authLoading && user && !user.is_admin) {
-    return <p className="text-sm text-muted-foreground">Admins only.</p>;
+    return <p className="text-sm text-muted-foreground">{t("adminsOnly")}</p>;
   }
 
   const definitions = definitionsQuery.data?.results ?? [];
@@ -43,10 +45,8 @@ export default function FormulasPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Formula definitions</h1>
-          <p className="text-sm text-muted-foreground">
-            Wire computed metric types (BMI, body fat %, TDEE) to the metric types they read from.
-          </p>
+          <h1 className="text-xl font-semibold tracking-tight">{t("title")}</h1>
+          <p className="text-sm text-muted-foreground">{t("description")}</p>
         </div>
         <CreateFormulaDefinitionDialog />
       </div>
@@ -54,14 +54,14 @@ export default function FormulasPage() {
       {definitionsQuery.isLoading ? (
         <Skeleton className="h-40" />
       ) : definitions.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No formula definitions yet.</p>
+        <p className="text-sm text-muted-foreground">{t("empty")}</p>
       ) : (
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Computed metric type</TableHead>
-              <TableHead>Formula</TableHead>
-              <TableHead>Inputs</TableHead>
+              <TableHead>{t("colComputed")}</TableHead>
+              <TableHead>{t("colFormula")}</TableHead>
+              <TableHead>{t("colInputs")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
