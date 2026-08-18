@@ -19,3 +19,5 @@ export const metricAggregatePrefixKey = (metricTypeId: number) =>
 export const METRIC_THRESHOLDS_QUERY_KEY = ["metric-thresholds"] as const;
 
 export const FORMULA_DEFINITIONS_QUERY_KEY = ["formula-definitions"] as const;
+
+export const DASHBOARD_SUMMARY_QUERY_KEY = ["dashboard-summary"] as const;

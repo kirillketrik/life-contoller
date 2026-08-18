@@ -1,6 +1,8 @@
+from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    DashboardSummaryView,
     FormulaDefinitionViewSet,
     MetricEntryViewSet,
     MetricThresholdViewSet,
@@ -13,4 +15,7 @@ router.register("metric-entries", MetricEntryViewSet, basename="metric-entry")
 router.register("metric-thresholds", MetricThresholdViewSet, basename="metric-threshold")
 router.register("formula-definitions", FormulaDefinitionViewSet, basename="formula-definition")
 
-urlpatterns = router.urls
+urlpatterns = [
+    path("dashboard-summary/", DashboardSummaryView.as_view(), name="dashboard-summary"),
+    *router.urls,
+]

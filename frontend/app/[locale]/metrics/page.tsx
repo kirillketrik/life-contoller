@@ -1,8 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useEffect } from "react";
 
 import { useAuth } from "@/components/auth-provider";
@@ -10,10 +9,12 @@ import { CreateMetricTypeDialog } from "@/components/metrics/create-metric-type-
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Link, useRouter } from "@/i18n/navigation";
 import { metricTypes } from "@/lib/api";
 import { METRIC_TYPES_QUERY_KEY } from "@/lib/query-keys";
 
 export default function MetricsPage() {
+  const t = useTranslations("metrics");
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
 
@@ -33,9 +34,9 @@ export default function MetricsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Metric types</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t("title")}</h1>
           <p className="text-sm text-muted-foreground">
-            Definitions of what can be logged. {user?.is_admin ? "" : "Only admins can create or edit these."}
+            {user?.is_admin ? t("descriptionAdmin") : t("descriptionUser")}
           </p>
         </div>
         {user?.is_admin && <CreateMetricTypeDialog />}
@@ -48,7 +49,7 @@ export default function MetricsPage() {
           ))}
         </div>
       ) : types.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No metric types yet.</p>
+        <p className="text-sm text-muted-foreground">{t("empty")}</p>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
           {types.map((type) => (
@@ -61,8 +62,8 @@ export default function MetricsPage() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="text-sm text-muted-foreground">
-                  {type.unit ? `Unit: ${type.unit}` : "No unit"}
-                  {type.aggregation ? ` · Aggregation: ${type.aggregation}` : ""}
+                  {type.unit ? t("unit", { unit: type.unit }) : t("noUnit")}
+                  {type.aggregation ? t("aggregation", { aggregation: type.aggregation }) : ""}
                 </CardContent>
               </Card>
             </Link>

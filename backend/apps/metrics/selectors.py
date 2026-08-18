@@ -9,13 +9,18 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from django.db.models import QuerySet
+from dateutil.relativedelta import relativedelta
+from django.db.models import Count, QuerySet
+from django.db.models.functions import TruncMonth
+from django.utils import timezone
 
 from apps.core.permissions import PermissionService
 
 from .aggregation import DataPoint
 from .formulas import computed_series
 from .models import FormulaDefinition, MetricEntry, MetricThreshold, MetricType
+
+DASHBOARD_TREND_MONTHS = 12
 
 
 def metric_type_list() -> QuerySet[MetricType]:
@@ -82,3 +87,44 @@ def formula_definition_list() -> QuerySet[FormulaDefinition]:
 
 def formula_definition_get(*, formula_definition_id: int) -> FormulaDefinition | None:
     return FormulaDefinition.objects.filter(id=formula_definition_id).first()
+
+
+def dashboard_summary_for_user(*, user) -> dict:
+    """Everything the dashboard's KPI row + chart cards need, gathered in one
+    call — same "aggregate once, derive many stats" rule as
+    `points_for_metric_type`/the `/aggregate/` endpoint. Entry/threshold
+    counts and the breakdowns are scoped to `user` (dashboards are personal,
+    admins included — same as `/aggregate/`); the metric-type count is the
+    shared catalog size, visible to everyone.
+    """
+    entries = metric_entry_list_for_user(user=user)
+
+    by_metric_type = (
+        entries.values("metric_type__name")
+        .annotate(count=Count("id"))
+        .order_by("-count")
+    )
+
+    trend_start = (timezone.now() - relativedelta(months=DASHBOARD_TREND_MONTHS - 1)).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+    by_month = (
+        entries.filter(recorded_at__gte=trend_start)
+        .annotate(month=TruncMonth("recorded_at"))
+        .values("month")
+        .annotate(count=Count("id"))
+        .order_by("month")
+    )
+
+    return {
+        "metric_type_count": MetricType.objects.count(),
+        "entry_count": entries.count(),
+        "threshold_count": metric_threshold_list_for_user(user=user).count(),
+        "entries_by_metric_type": [
+            {"metric_type_name": row["metric_type__name"], "count": row["count"]}
+            for row in by_metric_type
+        ],
+        "entries_by_month": [
+            {"month": row["month"].strftime("%Y-%m"), "count": row["count"]} for row in by_month
+        ],
+    }

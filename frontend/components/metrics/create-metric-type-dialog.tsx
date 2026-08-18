@@ -1,6 +1,7 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -29,6 +30,7 @@ import { METRIC_TYPES_QUERY_KEY } from "@/lib/query-keys";
 import { type Aggregation, createMetricTypeSchema, type ValueType } from "@/lib/types";
 
 export function CreateMetricTypeDialog() {
+  const t = useTranslations("metrics");
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -49,12 +51,12 @@ export function CreateMetricTypeDialog() {
     mutationFn: metricTypes.create,
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: METRIC_TYPES_QUERY_KEY });
-      toast.success(`Created metric type "${created.name}"`);
+      toast.success(t("created", { name: created.name }));
       reset();
       setOpen(false);
     },
     onError: (error) => {
-      toast.error(error instanceof ApiError ? error.message : "Failed to create metric type");
+      toast.error(error instanceof ApiError ? error.message : t("createFailed"));
     },
   });
 
@@ -68,7 +70,7 @@ export function CreateMetricTypeDialog() {
       is_computed: isComputed,
     });
     if (!parsed.success) {
-      toast.error(parsed.error.issues[0]?.message ?? "Invalid input");
+      toast.error(parsed.error.issues[0]?.message ?? t("createFailed"));
       return;
     }
     mutation.mutate(parsed.data);
@@ -76,46 +78,43 @@ export function CreateMetricTypeDialog() {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button>New metric type</Button>} />
+      <DialogTrigger render={<Button>{t("new")}</Button>} />
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>New metric type</DialogTitle>
-            <DialogDescription>
-              Define a kind of value that can be logged, e.g. &quot;Weight&quot; or &quot;Insulin
-              dose&quot;.
-            </DialogDescription>
+            <DialogTitle>{t("createTitle")}</DialogTitle>
+            <DialogDescription>{t("createDescription")}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="space-y-2">
-              <Label htmlFor="mt-name">Name</Label>
+              <Label htmlFor="mt-name">{t("name")}</Label>
               <Input id="mt-name" value={name} onChange={(e) => setName(e.target.value)} required />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="mt-unit">Unit</Label>
+              <Label htmlFor="mt-unit">{t("unitLabel")}</Label>
               <Input
                 id="mt-unit"
-                placeholder="e.g. kg, mg/dL, ml"
+                placeholder={t("unitPlaceholder")}
                 value={unit}
                 onChange={(e) => setUnit(e.target.value)}
               />
             </div>
             <div className="space-y-2">
-              <Label>Value type</Label>
+              <Label>{t("valueType")}</Label>
               <Select value={valueType} onValueChange={(v) => setValueType(v as ValueType)}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="number">Number</SelectItem>
-                  <SelectItem value="text">Text</SelectItem>
-                  <SelectItem value="boolean">Boolean</SelectItem>
-                  <SelectItem value="date">Date</SelectItem>
+                  <SelectItem value="number">{t("valueTypeNumber")}</SelectItem>
+                  <SelectItem value="text">{t("valueTypeText")}</SelectItem>
+                  <SelectItem value="boolean">{t("valueTypeBoolean")}</SelectItem>
+                  <SelectItem value="date">{t("valueTypeDate")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>Aggregation (optional)</Label>
+              <Label>{t("aggregationLabel")}</Label>
               <Select
                 value={aggregation || "none"}
                 onValueChange={(v) => setAggregation(v === "none" ? "" : (v as Aggregation))}
@@ -124,27 +123,24 @@ export function CreateMetricTypeDialog() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">None</SelectItem>
-                  <SelectItem value="sum">Sum</SelectItem>
-                  <SelectItem value="last">Last</SelectItem>
-                  <SelectItem value="avg">Average</SelectItem>
+                  <SelectItem value="none">{t("aggregationNone")}</SelectItem>
+                  <SelectItem value="sum">{t("aggregationSum")}</SelectItem>
+                  <SelectItem value="last">{t("aggregationLast")}</SelectItem>
+                  <SelectItem value="avg">{t("aggregationAvg")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div className="flex items-center justify-between">
               <div>
-                <Label htmlFor="mt-computed">Computed</Label>
-                <p className="text-xs text-muted-foreground">
-                  Derived from other metrics via a formula (BMI, TDEE, ...) instead of logged
-                  directly.
-                </p>
+                <Label htmlFor="mt-computed">{t("computed")}</Label>
+                <p className="text-xs text-muted-foreground">{t("computedHint")}</p>
               </div>
               <Switch id="mt-computed" checked={isComputed} onCheckedChange={setIsComputed} />
             </div>
           </div>
           <DialogFooter>
             <Button type="submit" disabled={mutation.isPending}>
-              {mutation.isPending ? "Creating..." : "Create"}
+              {mutation.isPending ? t("creating") : t("create")}
             </Button>
           </DialogFooter>
         </form>

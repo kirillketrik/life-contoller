@@ -156,3 +156,22 @@ export const createFormulaDefinitionSchema = z.object({
   input_mapping: z.record(z.string(), z.number()),
 });
 export type CreateFormulaDefinitionInput = z.infer<typeof createFormulaDefinitionSchema>;
+
+export const dashboardEntriesByTypeSchema = z.object({
+  metric_type_name: z.string(),
+  count: z.number(),
+});
+
+export const dashboardEntriesByMonthSchema = z.object({
+  month: z.string(),
+  count: z.number(),
+});
+
+export const dashboardSummarySchema = z.object({
+  metric_type_count: z.number(),
+  entry_count: z.number(),
+  threshold_count: z.number(),
+  entries_by_metric_type: z.array(dashboardEntriesByTypeSchema),
+  entries_by_month: z.array(dashboardEntriesByMonthSchema),
+});
+export type DashboardSummary = z.infer<typeof dashboardSummarySchema>;

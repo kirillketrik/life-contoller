@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -9,10 +9,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import { loginInputSchema } from "@/lib/types";
 
 export default function LoginPage() {
+  const t = useTranslations("login");
   const { user, login, loading } = useAuth();
   const router = useRouter();
   const [username, setUsername] = useState("");
@@ -27,7 +29,7 @@ export default function LoginPage() {
     event.preventDefault();
     const parsed = loginInputSchema.safeParse({ username, password });
     if (!parsed.success) {
-      toast.error(parsed.error.issues[0]?.message ?? "Invalid input");
+      toast.error(parsed.error.issues[0]?.message ?? t("invalid"));
       return;
     }
     setSubmitting(true);
@@ -35,7 +37,7 @@ export default function LoginPage() {
       await login(parsed.data);
       router.replace("/metrics");
     } catch (error) {
-      toast.error(error instanceof ApiError ? error.message : "Login failed");
+      toast.error(error instanceof ApiError ? error.message : t("failed"));
     } finally {
       setSubmitting(false);
     }
@@ -45,13 +47,13 @@ export default function LoginPage() {
     <div className="flex justify-center pt-12">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle>Sign in</CardTitle>
-          <CardDescription>Enter your Life Controller credentials.</CardDescription>
+          <CardTitle>{t("title")}</CardTitle>
+          <CardDescription>{t("description")}</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="username">Username</Label>
+              <Label htmlFor="username">{t("username")}</Label>
               <Input
                 id="username"
                 autoComplete="username"
@@ -61,7 +63,7 @@ export default function LoginPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
+              <Label htmlFor="password">{t("password")}</Label>
               <Input
                 id="password"
                 type="password"
@@ -72,7 +74,7 @@ export default function LoginPage() {
               />
             </div>
             <Button type="submit" className="w-full" disabled={submitting}>
-              {submitting ? "Signing in..." : "Sign in"}
+              {submitting ? t("submitting") : t("submit")}
             </Button>
           </form>
         </CardContent>
