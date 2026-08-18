@@ -47,7 +47,7 @@ class TestMetricTypePermissions:
 
 
 class TestMetricEntryPermissions:
-    def test_regular_user_cannot_create_entry(self, authenticated_client, number_metric_type):
+    def test_regular_user_can_create_own_entry(self, authenticated_client, regular_user, number_metric_type):
         response = authenticated_client.post(
             "/api/metric-entries/",
             {
@@ -56,7 +56,8 @@ class TestMetricEntryPermissions:
                 "recorded_at": timezone.now().isoformat(),
             },
         )
-        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert response.status_code == status.HTTP_201_CREATED
+        assert response.data["owner"] == regular_user.id
 
     def test_admin_can_create_entry(self, admin_client, admin_user, number_metric_type):
         response = admin_client.post(
@@ -69,6 +70,37 @@ class TestMetricEntryPermissions:
         )
         assert response.status_code == status.HTTP_201_CREATED
         assert response.data["owner"] == admin_user.id
+
+    def test_anonymous_cannot_create_entry(self, api_client, number_metric_type):
+        response = api_client.post(
+            "/api/metric-entries/",
+            {
+                "metric_type": number_metric_type.id,
+                "value": 71,
+                "recorded_at": timezone.now().isoformat(),
+            },
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_regular_user_can_edit_own_entry(self, authenticated_client, metric_entry):
+        response = authenticated_client.patch(f"/api/metric-entries/{metric_entry.id}/", {"value": 99})
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["value"] == 99
+
+    def test_regular_user_can_delete_own_entry(self, authenticated_client, metric_entry):
+        response = authenticated_client.delete(f"/api/metric-entries/{metric_entry.id}/")
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+
+    def test_regular_user_cannot_edit_others_entry(self, authenticated_client, number_metric_type, other_user):
+        theirs = baker.make(
+            MetricEntry, metric_type=number_metric_type, owner=other_user, value=1, recorded_at=timezone.now()
+        )
+        response = authenticated_client.patch(f"/api/metric-entries/{theirs.id}/", {"value": 99})
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_admin_can_edit_others_entry(self, admin_client, metric_entry):
+        response = admin_client.patch(f"/api/metric-entries/{metric_entry.id}/", {"value": 99})
+        assert response.status_code == status.HTTP_200_OK
 
     def test_user_only_sees_own_entries(self, authenticated_client, metric_entry, other_user):
         baker.make(

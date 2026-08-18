@@ -16,7 +16,7 @@ def test_plain_user_is_not_admin(regular_user):
 def test_group_membership_grants_admin_role(admin_user):
     assert PermissionService.is_admin(admin_user)
     assert PermissionService.can(admin_user, Action.CREATE, Resource.METRIC_TYPE)
-    assert PermissionService.can(admin_user, Action.DELETE, Resource.METRIC_ENTRY)
+    assert PermissionService.can(admin_user, Action.DELETE, Resource.FORMULA_DEFINITION)
 
 
 @pytest.mark.django_db
