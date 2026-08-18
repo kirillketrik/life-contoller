@@ -41,10 +41,60 @@ class MetricTypePermission(IsAdminOrReadOnly):
     resource = Resource.METRIC_TYPE
 
 
-class MetricEntryPermission(IsAdminOrReadOnly):
-    resource = Resource.METRIC_ENTRY
+class MetricEntryPermission(BasePermission):
+    """Every authenticated user may log entries for themselves and manage
+    their own; admins may manage everyone's, consistent with them being able
+    to read everyone's entries too (`selectors.metric_entry_list_for_user`).
+
+    Unlike `MetricType` (an admin-defined shared catalog of what *can* be
+    tracked), logging a reading against it is a personal action any user
+    should be able to take — so this isn't role-gated through
+    `PermissionService` the way `MetricTypePermission` is; it's ownership,
+    same as `MetricThresholdPermission`.
+    """
+
+    def has_permission(self, request, view) -> bool:
+        return bool(request.user and request.user.is_authenticated)
 
     def has_object_permission(self, request, view, obj) -> bool:
-        if request.method in SAFE_METHODS:
-            return PermissionService.is_admin(request.user) or obj.owner_id == request.user.id
-        return super().has_object_permission(request, view, obj)
+        return PermissionService.is_admin(request.user) or obj.owner_id == request.user.id
+
+
+class MetricThresholdPermission(BasePermission):
+    """Every authenticated user manages their own thresholds. This is a
+    personal preference, not a role-gated action, so it doesn't go through
+    `PermissionService` — it's plain ownership, checked directly.
+    """
+
+    def has_permission(self, request, view) -> bool:
+        return bool(request.user and request.user.is_authenticated)
+
+    def has_object_permission(self, request, view, obj) -> bool:
+        return obj.user_id == request.user.id
+
+
+class FormulaDefinitionPermission(BasePermission):
+    """Admin-only for every action, including reads. Unlike MetricType/
+    MetricEntry (shared read-only reference data for any authenticated
+    user), formula definitions are only ever viewed/edited by admins — the
+    frontend UI for them is admin-only too, per the same rule.
+    """
+
+    def has_permission(self, request, view) -> bool:
+        if not (request.user and request.user.is_authenticated):
+            return False
+        action = {
+            "GET": Action.VIEW,
+            "HEAD": Action.VIEW,
+            "OPTIONS": Action.VIEW,
+            "POST": Action.CREATE,
+            "PUT": Action.EDIT,
+            "PATCH": Action.EDIT,
+            "DELETE": Action.DELETE,
+        }.get(request.method)
+        if action is None:
+            return False
+        return PermissionService.can(request.user, action, Resource.FORMULA_DEFINITION)
+
+    def has_object_permission(self, request, view, obj) -> bool:
+        return self.has_permission(request, view)

@@ -15,6 +15,7 @@ from django.conf import settings
 
 
 class Action(str, Enum):
+    VIEW = "view"
     CREATE = "create"
     EDIT = "edit"
     DELETE = "delete"
@@ -23,6 +24,7 @@ class Action(str, Enum):
 class Resource(str, Enum):
     METRIC_TYPE = "metric_type"
     METRIC_ENTRY = "metric_entry"
+    FORMULA_DEFINITION = "formula_definition"
 
 
 ADMIN_ROLE = "admin"
@@ -35,9 +37,16 @@ _ROLE_PERMISSIONS: dict[str, set[tuple[Resource, Action]]] = {
         (Resource.METRIC_TYPE, Action.CREATE),
         (Resource.METRIC_TYPE, Action.EDIT),
         (Resource.METRIC_TYPE, Action.DELETE),
-        (Resource.METRIC_ENTRY, Action.CREATE),
-        (Resource.METRIC_ENTRY, Action.EDIT),
-        (Resource.METRIC_ENTRY, Action.DELETE),
+        # MetricEntry is deliberately absent here: logging entries is a
+        # personal action any authenticated user may take for themselves,
+        # not a role-gated one — see MetricEntryPermission, which checks
+        # ownership directly instead of going through this table.
+        # Formula definitions are fully admin-only, including reads (unlike
+        # MetricType, which any authenticated user may read).
+        (Resource.FORMULA_DEFINITION, Action.VIEW),
+        (Resource.FORMULA_DEFINITION, Action.CREATE),
+        (Resource.FORMULA_DEFINITION, Action.EDIT),
+        (Resource.FORMULA_DEFINITION, Action.DELETE),
     },
 }
 
