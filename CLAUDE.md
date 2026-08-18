@@ -74,6 +74,7 @@ Today's rules, all in `apps/metrics/permissions.py`:
 | `MetricEntry` (`MetricEntryPermission`, **ownership**) | own entries; admins see everyone's | any authenticated user, for their own entries; admins may also edit/delete anyone's |
 | `MetricThreshold` (`MetricThresholdPermission`, **ownership**) | own thresholds only | any authenticated user, for their own thresholds only (no admin override — thresholds are a personal preference) |
 | `FormulaDefinition` (`FormulaDefinitionPermission`, role-gated via `PermissionService`) | admins only | admins only |
+| `FavoriteMetric` (**ownership** — exposed as actions on `MetricTypeViewSet`, not a separate permission class; see "Favorite metrics" below) | own favorites only | any authenticated user, for their own favorites only |
 
 The important asymmetry: **defining** a metric type is an admin action (it's shared, global
 config), but **logging a reading** against one is something every user does for themselves — so
@@ -99,6 +100,47 @@ types (weight, blood sugar, insulin dose, water intake, etc. are all just data).
   model/migration. Only reach for a dedicated model when the domain has structure that doesn't
   fit "one value + optional metadata at a point in time" (e.g. multi-line finance transactions
   later on).
+
+### Favorite metrics (dashboard)
+`FavoriteMetric` is a per-user through-model (`user`, `metric_type`, `order`, unique per
+user+metric type) letting a user pin a metric's chart to their dashboard — per-user, not global,
+same as `MetricThreshold`; favoriting a metric never affects what other users see.
+
+- Exposed as **actions on `MetricTypeViewSet`** (`apps/metrics/views.py`), not a separate
+  viewset/router entry, since favoriting only ever makes sense in the context of a metric type:
+  `POST`/`DELETE /api/metric-types/<id>/favorite/` (idempotent toggle), `GET
+  /api/metric-types/favorites/` (the current user's favorites, each pre-bucketed with a recent
+  series — see below), `PATCH /api/metric-types/favorites/reorder/` (persists a new `order` for
+  an exact-match set of the user's own favorite metric-type ids).
+- **Ownership, not role-gated**, despite living on `MetricTypeViewSet` (whose CRUD actions *are*
+  role-gated via `MetricTypePermission`): `get_permissions()` overrides to plain `IsAuthenticated`
+  for the three favorite-related actions, and every query is scoped to `request.user` directly in
+  the view — no object-level permission check needed, since a favorite's identity in the URL is
+  always the *metric type* id, never the favorite row's own id, so there's no cross-user object to
+  leak. Same reasoning as `MetricEntry`/`MetricThreshold`: personal action, not shared config.
+- `GET /favorites/` returns each favorite with its metric type plus a pre-bucketed ~30-day daily
+  series (`selectors.favorites_chart_data_for_user`, reusing `points_for_metric_type`/`bucketize`/
+  `summarize` — same "aggregate once" building blocks as `/aggregate/`) so the dashboard renders
+  every favorite chart card from this one response, instead of one `/aggregate/` request per card.
+  Works for computed metric types too (BMI, TDEE, ...), same as `/aggregate/`. A favorited
+  non-chartable metric type (`text`/`boolean`/`date` — the UI never offers this, but the API
+  doesn't block it) degrades to an empty series rather than erroring the whole list.
+- **Reordering**: the backend endpoint is implemented and tested, but the frontend doesn't call it
+  yet — drag-and-drop reordering was scoped as a nice-to-have, not required for v1 (see
+  `frontend/components/metrics/favorite-toggle.tsx`/`app/[locale]/page.tsx`). Favorites currently
+  display in `order`/`created_at` order (insertion order, since every new favorite defaults to
+  `order=0`). Follow-up if/when it's worth the drag-and-drop UI work.
+- Frontend: `useIsFavoriteMetric`/`FavoriteToggleButton` (`components/metrics/favorite-toggle.tsx`)
+  is the single place that calls the favorite/unfavorite endpoints — an optimistic local toggle
+  (not a cache-level optimistic update, since a newly favorited item has no chart data client-side
+  to fabricate) that rolls back on error, matching the "keep favorite-toggling logic in a hook
+  layer" convention. Rendered on `MetricDashboard` (metric detail page) and on each
+  `FavoriteMetricCard` (dashboard's favorites section, `components/dashboard/favorite-metric-card.tsx`)
+  — both read/write the same `FAVORITE_METRICS_QUERY_KEY`, so toggling in either place stays in
+  sync. The dashboard favorites section reuses the existing `ChartCard` wrapper (extended with an
+  optional `action` slot for the toggle button) and `MetricChart` — no second chart component —
+  and caps display at 8 cards, showing a "N of M" note rather than a dedicated favorites page if
+  there are more (the metric detail page is still reachable for every metric, favorited or not).
 
 ### Timeframe aggregation (OHLC buckets, summary, time-in-range)
 `backend/apps/metrics/aggregation.py` holds all bucketing/statistics logic, deliberately decoupled
@@ -278,7 +320,7 @@ life-controller/
 │   │   │   ├── serializers.py
 │   │   │   ├── views.py           # LoginView / LogoutView / MeView
 │   │   │   └── urls.py
-│   │   └── metrics/               # MetricType / MetricEntry / MetricThreshold / FormulaDefinition
+│   │   └── metrics/               # MetricType / MetricEntry / MetricThreshold / FormulaDefinition / FavoriteMetric
 │   │       ├── models.py
 │   │       ├── selectors.py       # all read-query logic for this app
 │   │       ├── aggregation.py     # timeframe bucketing / summary / time-in-range (ORM-free)
@@ -321,12 +363,14 @@ life-controller/
     │   │   └── app-sidebar.tsx      # fixed sidebar: nav groups, admin gating, user footer menu
     │   ├── dashboard/
     │   │   ├── chart-card.tsx              # icon+title Card wrapper used by every dashboard card
+    │   │   ├── favorite-metric-card.tsx    # ChartCard + MetricChart for one favorited metric
     │   │   ├── horizontal-bar-list.tsx     # categorical breakdowns (no time axis — not a chart lib)
     │   │   └── monthly-trend-chart.tsx     # lightweight-charts area series for the 12-month trend
     │   ├── metrics/                 # feature components
     │   │   ├── metric-chart.tsx             # lightweight-charts candlestick/line wrapper
     │   │   ├── metric-dashboard.tsx         # timeframe selector + chart + summary stats
     │   │   ├── threshold-config.tsx         # per-user threshold dialog + useMetricThreshold hook
+    │   │   ├── favorite-toggle.tsx          # star toggle button + useIsFavoriteMetric hook
     │   │   ├── create-formula-definition-dialog.tsx
     │   │   ├── create-metric-entry-dialog.tsx
     │   │   └── create-metric-type-dialog.tsx
@@ -396,6 +440,7 @@ Installing a new package or shadcn component works the same way, e.g.
 | Metrics module core (MetricType/MetricEntry backend + centralized permissions + session auth + Docker infra incl. MinIO + frontend CRUD UI with TanStack Query/Zod) | `feature/metrics-module` | Implemented, manually verified end-to-end via browser |
 | Dashboards & computed metrics (Lightweight Charts candlestick/line dashboard with timeframe selector, timeframe-aggregation API, per-user `MetricThreshold` + time-in-range stat, `date` value type, computed `MetricType`s via `FormulaDefinition`/`bmi`/`body_fat_navy`/`tdee_mifflin`, admin-only formulas UI) | `feature/metrics-module` | Implemented, manually verified end-to-end via browser (chart in light/dark, timeframe controls, threshold + time-in-range, BMI computed end-to-end from Weight/Height entries, admin-only formulas gating checked both in the UI and directly against the API) |
 | UI redesign, localization & DX (fixed sidebar with collapsible nav + user footer menu; dashboard landing page with KPI cards + chart-card grid via new `GET /api/dashboard-summary/`; Geist Variable global font; Russian-first `next-intl` localization across every page/component incl. shadcn primitives; 4 project skills — `ui-design`/`architecture`/`crud-resource`/`dashboard-chart-card`) | `feature/ui-redesign-i18n` (branched off `main`, which was created from `feature/metrics-module`'s tip) | Implemented, manually verified end-to-end via browser (Russian copy on every page, sidebar collapse/expand + active-item highlight + admin-group gating, metric-type create flow, dashboard KPI/chart cards with real data, light/dark theme); backend: 96/96 tests passing incl. 4 new for `dashboard-summary`, `ruff check .` clean after fixing a pre-existing exclude-config bug; frontend: `eslint`/`tsc` clean |
+| Favorite metric charts on the dashboard (`FavoriteMetric` per-user through-model; favorite/unfavorite/list/reorder actions on `MetricTypeViewSet`, ownership-scoped; dashboard "Избранное" section reusing `ChartCard`+`MetricChart`, capped at 8 with a "N of M" note; star toggle on the metric detail page and every favorite card, optimistic with rollback) | `feature/favorite-metrics` | Implemented, manually verified end-to-end via browser as two different users (favorite/unfavorite/idempotency, per-user scoping — one user's favorites and chart data never show another's, computed-metric-type favoriting via BMI/TDEE, toggle state in sync between the detail page and dashboard card); backend: 111/111 tests passing incl. 15 new for favorites, `ruff check .` clean; frontend: `eslint`/`tsc` clean. Reorder endpoint is implemented+tested but not yet wired to any frontend drag-and-drop UI — noted as a follow-up above. |
 
 `MetricEntry` and `MetricThreshold` are **ownership-based**, not admin-gated: any authenticated
 user creates/edits/deletes their own entries and thresholds; only `MetricType` definitions and
