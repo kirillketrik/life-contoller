@@ -101,7 +101,16 @@ export function CreateMetricTypeDialog() {
             </div>
             <div className="space-y-2">
               <Label>{t("valueType")}</Label>
-              <Select value={valueType} onValueChange={(v) => setValueType(v as ValueType)}>
+              <Select
+                items={{
+                  number: t("valueTypeNumber"),
+                  text: t("valueTypeText"),
+                  boolean: t("valueTypeBoolean"),
+                  date: t("valueTypeDate"),
+                }}
+                value={valueType}
+                onValueChange={(v) => setValueType(v as ValueType)}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -116,6 +125,12 @@ export function CreateMetricTypeDialog() {
             <div className="space-y-2">
               <Label>{t("aggregationLabel")}</Label>
               <Select
+                items={{
+                  none: t("aggregationNone"),
+                  sum: t("aggregationSum"),
+                  last: t("aggregationLast"),
+                  avg: t("aggregationAvg"),
+                }}
                 value={aggregation || "none"}
                 onValueChange={(v) => setAggregation(v === "none" ? "" : (v as Aggregation))}
               >
