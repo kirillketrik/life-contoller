@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import FormulaDefinition, MetricEntry, MetricThreshold, MetricType
+from .models import FavoriteMetric, FormulaDefinition, MetricEntry, MetricThreshold, MetricType
 
 
 @admin.register(MetricType)
@@ -35,6 +35,14 @@ class MetricEntryAdmin(admin.ModelAdmin):
 @admin.register(MetricThreshold)
 class MetricThresholdAdmin(admin.ModelAdmin):
     list_display = ["metric_type", "user", "lower_bound", "upper_bound"]
+    list_filter = ["metric_type"]
+    search_fields = ["user__username", "metric_type__name"]
+    autocomplete_fields = ["metric_type", "user"]
+
+
+@admin.register(FavoriteMetric)
+class FavoriteMetricAdmin(admin.ModelAdmin):
+    list_display = ["metric_type", "user", "order", "created_at"]
     list_filter = ["metric_type"]
     search_fields = ["user__username", "metric_type__name"]
     autocomplete_fields = ["metric_type", "user"]

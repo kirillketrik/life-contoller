@@ -187,6 +187,14 @@ class FormulaDefinitionSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class FavoriteReorderSerializer(serializers.Serializer):
+    """Validates the body for `MetricTypeViewSet.reorder_favorites` — an
+    ordered list of metric type ids, which must exactly match the requesting
+    user's current favorites (checked in the view, against the DB)."""
+
+    metric_type_ids = serializers.ListField(child=serializers.IntegerField(), allow_empty=False)
+
+
 class AggregateQuerySerializer(serializers.Serializer):
     """Validates the query params for `MetricTypeViewSet.aggregate`."""
 
