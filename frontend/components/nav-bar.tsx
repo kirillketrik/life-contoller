@@ -22,6 +22,11 @@ export function NavBar() {
               <Link href="/metrics" className="text-sm text-muted-foreground hover:text-foreground">
                 Metrics
               </Link>
+              {user.is_admin && (
+                <Link href="/formulas" className="text-sm text-muted-foreground hover:text-foreground">
+                  Formulas
+                </Link>
+              )}
               {user.is_admin && <Badge variant="secondary">admin</Badge>}
               <span className="text-sm text-muted-foreground">{user.username}</span>
               <Button variant="ghost" size="sm" onClick={() => logout()}>

@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { ApiError, metricEntries } from "@/lib/api";
-import { metricEntriesQueryKey } from "@/lib/query-keys";
+import { metricAggregatePrefixKey, metricEntriesQueryKey } from "@/lib/query-keys";
 import { createMetricEntrySchema, type MetricType } from "@/lib/types";
 
 function toLocalInputValue(date: Date): string {
@@ -33,6 +33,7 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
   const [numberValue, setNumberValue] = useState("");
   const [textValue, setTextValue] = useState("");
   const [booleanValue, setBooleanValue] = useState(false);
+  const [dateValue, setDateValue] = useState("");
   const [note, setNote] = useState("");
   const [recordedAt, setRecordedAt] = useState(() => toLocalInputValue(new Date()));
 
@@ -40,6 +41,7 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
     setNumberValue("");
     setTextValue("");
     setBooleanValue(false);
+    setDateValue("");
     setNote("");
     setRecordedAt(toLocalInputValue(new Date()));
   }
@@ -48,6 +50,7 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
     mutationFn: metricEntries.create,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: metricEntriesQueryKey(metricType.id) });
+      queryClient.invalidateQueries({ queryKey: metricAggregatePrefixKey(metricType.id) });
       toast.success("Entry logged");
       reset();
       setOpen(false);
@@ -64,7 +67,9 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
         ? Number(numberValue)
         : metricType.value_type === "boolean"
           ? booleanValue
-          : textValue;
+          : metricType.value_type === "date"
+            ? dateValue
+            : textValue;
     const parsed = createMetricEntrySchema.safeParse({
       metric_type: metricType.id,
       value,
@@ -116,6 +121,18 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
               <div className="flex items-center justify-between">
                 <Label htmlFor="value">Value</Label>
                 <Switch id="value" checked={booleanValue} onCheckedChange={setBooleanValue} />
+              </div>
+            )}
+            {metricType.value_type === "date" && (
+              <div className="space-y-2">
+                <Label htmlFor="value">Value</Label>
+                <Input
+                  id="value"
+                  type="date"
+                  value={dateValue}
+                  onChange={(e) => setDateValue(e.target.value)}
+                  required
+                />
               </div>
             )}
             <div className="space-y-2">

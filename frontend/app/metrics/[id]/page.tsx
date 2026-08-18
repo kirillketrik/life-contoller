@@ -6,6 +6,8 @@ import { use, useEffect } from "react";
 
 import { useAuth } from "@/components/auth-provider";
 import { CreateMetricEntryDialog } from "@/components/metrics/create-metric-entry-dialog";
+import { MetricDashboard } from "@/components/metrics/metric-dashboard";
+import { ThresholdConfigDialog, useMetricThreshold } from "@/components/metrics/threshold-config";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { metricEntries, metricTypes } from "@/lib/api";
@@ -37,10 +39,12 @@ export default function MetricTypeDetailPage({ params }: { params: Promise<{ id:
   const entriesQuery = useQuery({
     queryKey: metricEntriesQueryKey(metricTypeId),
     queryFn: () => metricEntries.list(metricTypeId),
-    enabled: Boolean(user),
+    enabled: Boolean(user) && !metricTypeQuery.data?.is_computed,
   });
 
-  if (metricTypeQuery.isLoading || entriesQuery.isLoading) {
+  const threshold = useMetricThreshold(metricTypeId, Boolean(user));
+
+  if (metricTypeQuery.isLoading) {
     return (
       <div className="space-y-3">
         <Skeleton className="h-6 w-40" />
@@ -54,6 +58,7 @@ export default function MetricTypeDetailPage({ params }: { params: Promise<{ id:
     return <p className="text-sm text-muted-foreground">Metric type not found.</p>;
   }
 
+  const chartable = metricType.is_computed || metricType.value_type === "number";
   const entries = entriesQuery.data?.results ?? [];
 
   return (
@@ -64,12 +69,20 @@ export default function MetricTypeDetailPage({ params }: { params: Promise<{ id:
           <p className="text-sm text-muted-foreground">
             {metricType.value_type}
             {metricType.unit ? ` · ${metricType.unit}` : ""}
+            {metricType.is_computed ? " · computed" : ""}
           </p>
         </div>
-        {user?.is_admin && <CreateMetricEntryDialog metricType={metricType} />}
+        <div className="flex items-center gap-2">
+          {chartable && <ThresholdConfigDialog metricType={metricType} threshold={threshold} />}
+          {!metricType.is_computed && <CreateMetricEntryDialog metricType={metricType} />}
+        </div>
       </div>
 
-      {entries.length === 0 ? (
+      {chartable && <MetricDashboard metricType={metricType} />}
+
+      {metricType.is_computed ? null : entriesQuery.isLoading ? (
+        <Skeleton className="h-64" />
+      ) : entries.length === 0 ? (
         <p className="text-sm text-muted-foreground">No entries logged yet.</p>
       ) : (
         <Table>

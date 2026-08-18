@@ -23,6 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { ApiError, metricTypes } from "@/lib/api";
 import { METRIC_TYPES_QUERY_KEY } from "@/lib/query-keys";
 import { type Aggregation, createMetricTypeSchema, type ValueType } from "@/lib/types";
@@ -34,16 +35,22 @@ export function CreateMetricTypeDialog() {
   const [unit, setUnit] = useState("");
   const [valueType, setValueType] = useState<ValueType>("number");
   const [aggregation, setAggregation] = useState<Aggregation>("");
+  const [isComputed, setIsComputed] = useState(false);
+
+  function reset() {
+    setName("");
+    setUnit("");
+    setValueType("number");
+    setAggregation("");
+    setIsComputed(false);
+  }
 
   const mutation = useMutation({
     mutationFn: metricTypes.create,
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: METRIC_TYPES_QUERY_KEY });
       toast.success(`Created metric type "${created.name}"`);
-      setName("");
-      setUnit("");
-      setValueType("number");
-      setAggregation("");
+      reset();
       setOpen(false);
     },
     onError: (error) => {
@@ -53,7 +60,13 @@ export function CreateMetricTypeDialog() {
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
-    const parsed = createMetricTypeSchema.safeParse({ name, unit, value_type: valueType, aggregation });
+    const parsed = createMetricTypeSchema.safeParse({
+      name,
+      unit,
+      value_type: valueType,
+      aggregation,
+      is_computed: isComputed,
+    });
     if (!parsed.success) {
       toast.error(parsed.error.issues[0]?.message ?? "Invalid input");
       return;
@@ -97,6 +110,7 @@ export function CreateMetricTypeDialog() {
                   <SelectItem value="number">Number</SelectItem>
                   <SelectItem value="text">Text</SelectItem>
                   <SelectItem value="boolean">Boolean</SelectItem>
+                  <SelectItem value="date">Date</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -116,6 +130,16 @@ export function CreateMetricTypeDialog() {
                   <SelectItem value="avg">Average</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="mt-computed">Computed</Label>
+                <p className="text-xs text-muted-foreground">
+                  Derived from other metrics via a formula (BMI, TDEE, ...) instead of logged
+                  directly.
+                </p>
+              </div>
+              <Switch id="mt-computed" checked={isComputed} onCheckedChange={setIsComputed} />
             </div>
           </div>
           <DialogFooter>
