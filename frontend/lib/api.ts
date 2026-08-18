@@ -1,16 +1,25 @@
 import type { z } from "zod";
 
 import {
+  type AggregateResponse,
+  aggregateResponseSchema,
+  type CreateFormulaDefinitionInput,
   type CreateMetricEntryInput,
+  type CreateMetricThresholdInput,
   type CreateMetricTypeInput,
   currentUserSchema,
+  type FormulaDefinition,
+  formulaDefinitionSchema,
   type LoginInput,
   type MetricEntry,
   metricEntrySchema,
+  type MetricThreshold,
+  metricThresholdSchema,
   type MetricType,
   metricTypeSchema,
   type Paginated,
   paginatedSchema,
+  type TimeframeUnit,
 } from "./types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -114,4 +123,61 @@ export const metricEntries = {
       body: JSON.stringify(data),
     }),
   delete: (id: number) => requestVoid(`/api/metric-entries/${id}/`, { method: "DELETE" }),
+};
+
+export interface AggregateParams {
+  timeframeUnit: TimeframeUnit;
+  timeframeCount: number;
+  start?: string;
+  end?: string;
+  relativeDays?: number;
+}
+
+function aggregateQueryString(params: AggregateParams): string {
+  const query = new URLSearchParams({
+    timeframe_unit: params.timeframeUnit,
+    timeframe_count: String(params.timeframeCount),
+  });
+  if (params.start && params.end) {
+    query.set("start", params.start);
+    query.set("end", params.end);
+  } else if (params.relativeDays) {
+    query.set("relative_days", String(params.relativeDays));
+  }
+  return query.toString();
+}
+
+export const metricAggregate = {
+  get: (metricTypeId: number, params: AggregateParams): Promise<AggregateResponse> =>
+    request(
+      aggregateResponseSchema,
+      `/api/metric-types/${metricTypeId}/aggregate/?${aggregateQueryString(params)}`,
+    ),
+};
+
+export const metricThresholds = {
+  list: (): Promise<Paginated<MetricThreshold>> =>
+    request(paginatedSchema(metricThresholdSchema), "/api/metric-thresholds/"),
+  create: (data: CreateMetricThresholdInput): Promise<MetricThreshold> =>
+    request(metricThresholdSchema, "/api/metric-thresholds/", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  update: (id: number, data: Partial<CreateMetricThresholdInput>): Promise<MetricThreshold> =>
+    request(metricThresholdSchema, `/api/metric-thresholds/${id}/`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  delete: (id: number) => requestVoid(`/api/metric-thresholds/${id}/`, { method: "DELETE" }),
+};
+
+export const formulaDefinitions = {
+  list: (): Promise<Paginated<FormulaDefinition>> =>
+    request(paginatedSchema(formulaDefinitionSchema), "/api/formula-definitions/"),
+  create: (data: CreateFormulaDefinitionInput): Promise<FormulaDefinition> =>
+    request(formulaDefinitionSchema, "/api/formula-definitions/", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  delete: (id: number) => requestVoid(`/api/formula-definitions/${id}/`, { method: "DELETE" }),
 };
