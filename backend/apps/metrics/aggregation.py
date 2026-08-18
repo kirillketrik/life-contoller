@@ -2,8 +2,8 @@
 
 Deliberately works on plain `DataPoint`s rather than a `MetricEntry`
 queryset: the same bucketing/summary/time-in-range logic serves both stored
-entries and on-the-fly computed series from `apps.metrics.formulas` (BMI,
-etc.) — neither cares where a point came from, only that it has a timestamp
+entries and on-the-fly computed series from `apps.metrics.formula_engine`
+(BMI, etc.) — neither cares where a point came from, only that it has a timestamp
 and a numeric value. Views build the `DataPoint` list from whichever source
 applies (see `apps.metrics.selectors.points_for_metric_type`).
 """

@@ -7,6 +7,7 @@ class ValueType(models.TextChoices):
     TEXT = "text", "Text"
     BOOLEAN = "boolean", "Boolean"
     DATE = "date", "Date"
+    CHOICE = "choice", "Choice"
 
 
 class Aggregation(models.TextChoices):
@@ -22,7 +23,13 @@ class MetricType(models.Model):
 
     `is_computed` marks a virtual metric type whose values are derived from
     other metric types via a `FormulaDefinition` rather than logged directly
-    through `MetricEntry` — see `apps.metrics.formulas`.
+    through `MetricEntry` — see `apps.metrics.formula_engine`.
+
+    `is_singleton` marks a metric type that holds one fact about the user
+    rather than a time series (e.g. Sex, Date of birth) — a user should edit
+    their one `MetricEntry` for it, not accumulate new ones. Enforced in
+    `MetricEntrySerializer.validate` on create; the frontend hides the "add
+    entry" affordance in favor of "edit" once an entry exists.
     """
 
     name = models.CharField(max_length=100, unique=True)
@@ -30,6 +37,7 @@ class MetricType(models.Model):
     value_type = models.CharField(max_length=16, choices=ValueType.choices)
     aggregation = models.CharField(max_length=16, choices=Aggregation.choices, blank=True)
     is_computed = models.BooleanField(default=False)
+    is_singleton = models.BooleanField(default=False)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -44,6 +52,35 @@ class MetricType(models.Model):
 
     def __str__(self) -> str:
         return self.name
+
+
+class MetricTypeChoice(models.Model):
+    """One fixed option of a `choice`-valued `MetricType` (e.g. Sex: male/female).
+
+    `code` is the stable identifier a `MetricEntry.value` stores and formulas
+    compare against — never shown to the user. `label` is the Russian text
+    shown in the UI. `numeric_value` is optional: set it when the option
+    should feed a calculation as a number (e.g. Activity Level's TDEE
+    multiplier); leave it null when the option is only ever compared by code
+    (e.g. Sex, used in an `if/then/else` formula branch, never arithmetic).
+    """
+
+    metric_type = models.ForeignKey(MetricType, on_delete=models.CASCADE, related_name="choices")
+    code = models.CharField(max_length=64)
+    label = models.CharField(max_length=100)
+    numeric_value = models.FloatField(null=True, blank=True)
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["order", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["metric_type", "code"], name="unique_choice_code_per_metric_type"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.metric_type.name}: {self.label} ({self.code})"
 
 
 class MetricEntry(models.Model):
@@ -140,23 +177,19 @@ class FormulaDefinition(models.Model):
     """Defines how a computed `MetricType` (`is_computed=True`) is derived
     from other metric types. There is exactly one definition per computed
     metric type; the definition itself is global (admin-defined), while the
-    inputs it references are resolved per-user at evaluation time — see
-    `apps.metrics.formulas`.
-    """
+    inputs it references are resolved per-user at evaluation time.
 
-    class FormulaKey(models.TextChoices):
-        BMI = "bmi", "BMI"
-        BODY_FAT_NAVY = "body_fat_navy", "Body fat % (Navy method)"
-        TDEE_MIFFLIN = "tdee_mifflin", "TDEE (Mifflin-St Jeor)"
+    `expression` is an AST (see `apps.metrics.formula_engine.nodes`) stored as
+    JSON — operator/function/comparison/conditional nodes with metric-type or
+    constant leaves. Deliberately not a string expression evaluated via
+    `eval`: the builder UI composes this tree visually, and it's parsed by a
+    strict recursive validator before ever being evaluated.
+    """
 
     computed_metric_type = models.OneToOneField(
         MetricType, on_delete=models.CASCADE, related_name="formula_definition"
     )
-    formula_key = models.CharField(max_length=32, choices=FormulaKey.choices)
-    input_mapping = models.JSONField(
-        help_text="Maps formula variable name (e.g. 'weight_kg') to the input MetricType id "
-        "it should be read from for the current user."
-    )
+    expression = models.JSONField(help_text="The formula's AST — see apps.metrics.formula_engine.")
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -170,4 +203,4 @@ class FormulaDefinition(models.Model):
         ordering = ["computed_metric_type__name"]
 
     def __str__(self) -> str:
-        return f"{self.computed_metric_type.name} = {self.formula_key}"
+        return f"{self.computed_metric_type.name} formula"

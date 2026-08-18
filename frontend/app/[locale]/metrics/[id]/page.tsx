@@ -1,13 +1,16 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { Pencil } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { use, useEffect } from "react";
 
 import { useAuth } from "@/components/auth-provider";
-import { CreateMetricEntryDialog } from "@/components/metrics/create-metric-entry-dialog";
+import { DeleteMetricEntryButton } from "@/components/metrics/delete-metric-entry-button";
 import { MetricDashboard } from "@/components/metrics/metric-dashboard";
+import { MetricEntryDialog } from "@/components/metrics/metric-entry-dialog";
 import { ThresholdConfigDialog, useMetricThreshold } from "@/components/metrics/threshold-config";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useRouter } from "@/i18n/navigation";
@@ -76,7 +79,12 @@ export default function MetricTypeDetailPage({ params }: { params: Promise<{ id:
         </div>
         <div className="flex items-center gap-2">
           {chartable && <ThresholdConfigDialog metricType={metricType} threshold={threshold} />}
-          {!metricType.is_computed && <CreateMetricEntryDialog metricType={metricType} />}
+          {!metricType.is_computed && (
+            <MetricEntryDialog
+              metricType={metricType}
+              entry={metricType.is_singleton ? entries[0] : undefined}
+            />
+          )}
         </div>
       </div>
 
@@ -93,6 +101,7 @@ export default function MetricTypeDetailPage({ params }: { params: Promise<{ id:
               <TableHead>{t("recordedAtHeader")}</TableHead>
               <TableHead>{t("valueHeader")}</TableHead>
               <TableHead>{t("noteHeader")}</TableHead>
+              <TableHead className="text-right">{t("actionsHeader")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -102,6 +111,20 @@ export default function MetricTypeDetailPage({ params }: { params: Promise<{ id:
                 <TableCell>{formatValue(entry, metricType)}</TableCell>
                 <TableCell className="text-muted-foreground">
                   {(entry.context?.note as string | undefined) ?? "—"}
+                </TableCell>
+                <TableCell className="text-right">
+                  <div className="flex justify-end gap-1">
+                    <MetricEntryDialog
+                      metricType={metricType}
+                      entry={entry}
+                      trigger={
+                        <Button variant="ghost" size="icon" aria-label={t("editAction")}>
+                          <Pencil className="size-4" />
+                        </Button>
+                      }
+                    />
+                    <DeleteMetricEntryButton metricTypeId={metricType.id} entry={entry} />
+                  </div>
                 </TableCell>
               </TableRow>
             ))}

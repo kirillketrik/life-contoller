@@ -6,8 +6,10 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import selectors
+from . import formula_engine, selectors
 from .aggregation import Timeframe, TimeframeUnit, bucketize, summarize, time_in_range_percent
+from .formula_engine.interpreter import evaluate_node
+from .formula_engine.resolvers import AsOfResolver
 from .models import (
     FavoriteMetric,
     FormulaDefinition,
@@ -26,6 +28,7 @@ from .serializers import (
     AggregateQuerySerializer,
     FavoriteReorderSerializer,
     FormulaDefinitionSerializer,
+    FormulaPreviewSerializer,
     MetricEntrySerializer,
     MetricThresholdSerializer,
     MetricTypeSerializer,
@@ -197,6 +200,34 @@ class FormulaDefinitionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return selectors.formula_definition_list()
+
+
+class FormulaPreviewView(APIView):
+    """Validates and, if structurally valid, evaluates a not-yet-saved
+    formula expression for the requesting admin's own current data — powers
+    both the builder's live preview and the "reject with a clear error
+    before saving" requirement, from one endpoint. Admin-only, same as the
+    rest of formula-definition editing."""
+
+    permission_classes = [FormulaDefinitionPermission]
+
+    def post(self, request):
+        serializer = FormulaPreviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        expression = serializer.validated_data["expression"]
+        computed_metric_type_id = serializer.validated_data.get("computed_metric_type")
+
+        errors = formula_engine.validate_expression(
+            expression, computed_metric_type_id=computed_metric_type_id
+        )
+        if errors:
+            return Response(
+                {"value": None, "errors": [{"code": e.code, "detail": e.detail} for e in errors]}
+            )
+
+        node = formula_engine.parse_node(expression)
+        value = evaluate_node(node, AsOfResolver(user=request.user, at=timezone.now()))
+        return Response({"value": value, "errors": []})
 
 
 class DashboardSummaryView(APIView):

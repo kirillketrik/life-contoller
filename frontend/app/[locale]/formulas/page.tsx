@@ -5,10 +5,11 @@ import { useTranslations } from "next-intl";
 import { useEffect } from "react";
 
 import { useAuth } from "@/components/auth-provider";
-import { CreateFormulaDefinitionDialog } from "@/components/metrics/create-formula-definition-dialog";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { useRouter } from "@/i18n/navigation";
+import { Link, useRouter } from "@/i18n/navigation";
+import { renderFormulaNodeRussian } from "@/lib/formula-builder/render-node";
 import { formulaDefinitions, metricTypes } from "@/lib/api";
 import { FORMULA_DEFINITIONS_QUERY_KEY, METRIC_TYPES_QUERY_KEY } from "@/lib/query-keys";
 
@@ -39,7 +40,8 @@ export default function FormulasPage() {
   }
 
   const definitions = definitionsQuery.data?.results ?? [];
-  const typesById = new Map((metricTypesQuery.data?.results ?? []).map((type) => [type.id, type]));
+  const allTypes = metricTypesQuery.data?.results ?? [];
+  const typesById = new Map(allTypes.map((type) => [type.id, type]));
 
   return (
     <div className="space-y-6">
@@ -48,7 +50,9 @@ export default function FormulasPage() {
           <h1 className="text-xl font-semibold tracking-tight">{t("title")}</h1>
           <p className="text-sm text-muted-foreground">{t("description")}</p>
         </div>
-        <CreateFormulaDefinitionDialog />
+        <Link href="/formulas/builder">
+          <Button>{t("new")}</Button>
+        </Link>
       </div>
 
       {definitionsQuery.isLoading ? (
@@ -61,7 +65,6 @@ export default function FormulasPage() {
             <TableRow>
               <TableHead>{t("colComputed")}</TableHead>
               <TableHead>{t("colFormula")}</TableHead>
-              <TableHead>{t("colInputs")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -70,11 +73,8 @@ export default function FormulasPage() {
                 <TableCell>
                   {typesById.get(definition.computed_metric_type)?.name ?? definition.computed_metric_type}
                 </TableCell>
-                <TableCell>{definition.formula_key}</TableCell>
-                <TableCell className="text-muted-foreground">
-                  {Object.entries(definition.input_mapping)
-                    .map(([variable, id]) => `${variable} = ${typesById.get(id)?.name ?? id}`)
-                    .join(", ")}
+                <TableCell className="font-mono text-sm text-muted-foreground">
+                  {renderFormulaNodeRussian(definition.expression, typesById)}
                 </TableCell>
               </TableRow>
             ))}

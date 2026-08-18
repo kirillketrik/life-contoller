@@ -1,9 +1,10 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from model_bakery import baker
 from rest_framework import status
 
+from apps.metrics.formula_engine import builtins
 from apps.metrics.models import (
     FormulaDefinition,
     MetricEntry,
@@ -16,7 +17,7 @@ pytestmark = pytest.mark.django_db
 
 
 def dt(*args) -> datetime:
-    return datetime(*args, tzinfo=timezone.utc)
+    return datetime(*args, tzinfo=UTC)
 
 
 class TestAggregateEndpoint:
@@ -145,8 +146,7 @@ class TestAggregateEndpoint:
         baker.make(
             FormulaDefinition,
             computed_metric_type=bmi,
-            formula_key=FormulaDefinition.FormulaKey.BMI,
-            input_mapping={"weight_kg": weight.id, "height_cm": height.id},
+            expression=builtins.build_bmi(weight_kg_id=weight.id, height_cm_id=height.id),
         )
         baker.make(
             MetricEntry, metric_type=weight, owner=regular_user, value=70, recorded_at=dt(2026, 1, 1, 8)

@@ -1,6 +1,6 @@
 ---
 name: architecture
-description: Life Controller's architecture decisions and design patterns — the generalized metrics layer, selectors/permissions layering, formula strategy pattern, i18n routing, and the chart-library split. Use before any architecture/design work so new features fit the existing structure instead of introducing a competing pattern.
+description: Life Controller's architecture decisions and design patterns — the generalized metrics layer, selectors/permissions layering, the AST formula engine's visitor pattern, i18n routing, and the chart-library split. Use before any architecture/design work so new features fit the existing structure instead of introducing a competing pattern.
 ---
 
 # Life Controller architecture
@@ -30,20 +30,25 @@ should fit in, not as a duplicate of the model docs.
     own data.
   - **The decision rule**: "does an admin *define what can be tracked*" → role-gated. "does a user
     *manage their own data*" → ownership. Don't add a third pattern; extend one of these two.
-- **Strategy pattern for formulas.** `apps/metrics/formulas.py`'s `_FORMULA_COMPUTE` dict (formula
-  key → compute function) plus `FORMULA_INPUT_VARS` (formula key → required input variable names)
-  is a strategy-pattern dispatch table in everything but name. Adding a new formula means adding
-  one entry to each — no new class hierarchy, no new abstraction. Keep it that way; don't refactor
-  this into a class-per-formula pattern without a concrete reason (e.g. formulas needing their own
-  state, which none currently do).
-- **No repository layer, no `services.py` yet — by design, not by omission.** Reads go through
-  selectors; writes are handled by serializer `create`/`update` (see e.g.
-  `MetricEntrySerializer.create` setting `owner` from the request). A `services.py` per app is the
-  documented next step *the first time write-side logic outgrows what a serializer method can
-  reasonably hold* (CLAUDE.md's own words) — e.g. a write that touches multiple models
-  transactionally, or has side effects beyond persistence. Don't add one preemptively; don't put
-  multi-step write logic directly in a view once a real case shows up — that's when `services.py`
-  gets introduced.
+- **Visitor pattern for the formula engine.** `apps/metrics/formula_engine/interpreter.py`'s
+  `evaluate_node(node, resolver)` is a recursive isinstance-dispatch visitor over the AST node
+  types in `nodes.py` — this superseded the old `apps/metrics/formulas.py` strategy-pattern
+  dispatch table (`_FORMULA_COMPUTE`/`FORMULA_INPUT_VARS`, one dict entry per hardcoded formula)
+  once formulas became general expression trees rather than a fixed enum of named formulas.
+  Adding a new *operator or function* to the engine means adding a case to `interpreter.py`'s
+  dispatch (and to `nodes.py`'s `parse_node`/arity table) — no new formula needs any code at all,
+  it's just a new `FormulaDefinition.expression` value. Don't add a class hierarchy per node type;
+  the isinstance-dispatch function is the whole pattern here, matching the codebase's general bias
+  toward the plainest structure that works.
+- **`services.py` exists — first used for a genuinely transactional multi-model write.**
+  `apps/metrics/services.py`'s `create_metric_type_with_choices`/`update_metric_type_choices`
+  wrap a `MetricType` + `MetricTypeChoice` nested write in one transaction, called from
+  `MetricTypeSerializer.create`/`update`. This is the concrete case CLAUDE.md's "first time
+  write-side logic outgrows what a serializer method can reasonably hold" threshold was written
+  for — reach for `services.py` in a new app the same way: a write that's multi-model/
+  transactional or has side effects beyond persistence, not for ordinary single-model
+  `create`/`update` (those still belong directly on the serializer, see e.g.
+  `MetricEntrySerializer.create`).
 - **Aggregation is ORM-free by design.** `apps/metrics/aggregation.py` operates on plain
   `DataPoint` lists, not querysets — that's what lets the exact same bucketing/summary code serve
   both stored `MetricEntry` rows and on-the-fly `computed_series` output from formulas. Any new

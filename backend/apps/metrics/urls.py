@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     DashboardSummaryView,
     FormulaDefinitionViewSet,
+    FormulaPreviewView,
     MetricEntryViewSet,
     MetricThresholdViewSet,
     MetricTypeViewSet,
@@ -17,5 +18,6 @@ router.register("formula-definitions", FormulaDefinitionViewSet, basename="formu
 
 urlpatterns = [
     path("dashboard-summary/", DashboardSummaryView.as_view(), name="dashboard-summary"),
+    path("formula-definitions/preview/", FormulaPreviewView.as_view(), name="formula-preview"),
     *router.urls,
 ]

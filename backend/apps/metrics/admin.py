@@ -1,6 +1,18 @@
 from django.contrib import admin
 
-from .models import FavoriteMetric, FormulaDefinition, MetricEntry, MetricThreshold, MetricType
+from .models import (
+    FavoriteMetric,
+    FormulaDefinition,
+    MetricEntry,
+    MetricThreshold,
+    MetricType,
+    MetricTypeChoice,
+)
+
+
+class MetricTypeChoiceInline(admin.TabularInline):
+    model = MetricTypeChoice
+    extra = 0
 
 
 @admin.register(MetricType)
@@ -16,6 +28,7 @@ class MetricTypeAdmin(admin.ModelAdmin):
     ]
     list_filter = ["value_type", "aggregation", "is_computed"]
     search_fields = ["name"]
+    inlines = [MetricTypeChoiceInline]
 
     def save_model(self, request, obj, form, change):
         if not change and not obj.created_by_id:
@@ -50,8 +63,7 @@ class FavoriteMetricAdmin(admin.ModelAdmin):
 
 @admin.register(FormulaDefinition)
 class FormulaDefinitionAdmin(admin.ModelAdmin):
-    list_display = ["computed_metric_type", "formula_key", "created_by", "created_at"]
-    list_filter = ["formula_key"]
+    list_display = ["computed_metric_type", "created_by", "created_at"]
     search_fields = ["computed_metric_type__name"]
     autocomplete_fields = ["computed_metric_type"]
 
