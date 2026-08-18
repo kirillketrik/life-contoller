@@ -2,7 +2,7 @@
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { type ReactElement, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -27,7 +27,12 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { ApiError, metricEntries } from "@/lib/api";
 import { metricAggregatePrefixKey, metricEntriesQueryKey } from "@/lib/query-keys";
-import { createMetricEntrySchema, type MetricType } from "@/lib/types";
+import {
+  type CreateMetricEntryInput,
+  createMetricEntrySchema,
+  type MetricEntry,
+  type MetricType,
+} from "@/lib/types";
 
 function toLocalInputValue(date: Date): string {
   const offset = date.getTimezoneOffset();
@@ -35,63 +40,77 @@ function toLocalInputValue(date: Date): string {
   return local.toISOString().slice(0, 16);
 }
 
-export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType }) {
+function initialValues(metricType: MetricType, entry: MetricEntry | undefined) {
+  return {
+    numberValue: entry && metricType.value_type === "number" ? String(entry.value) : "",
+    textValue: entry && metricType.value_type === "text" ? String(entry.value) : "",
+    booleanValue: entry && metricType.value_type === "boolean" ? Boolean(entry.value) : false,
+    dateValue: entry && metricType.value_type === "date" ? String(entry.value) : "",
+    choiceValue: entry && metricType.value_type === "choice" ? String(entry.value) : "",
+    note: (entry?.context?.note as string | undefined) ?? "",
+    recordedAt: entry ? toLocalInputValue(new Date(entry.recorded_at)) : toLocalInputValue(new Date()),
+  };
+}
+
+/** Logs a new value for a metric type, or edits an existing entry when
+ * `entry` is passed — the same value-type-branching form either way, since
+ * the only difference is which mutation submit calls. Pass `trigger` to
+ * override the default open button (e.g. a small icon button in a table
+ * row); otherwise renders the default "log value" / "edit value" button. */
+export function MetricEntryDialog({
+  metricType,
+  entry,
+  trigger,
+}: {
+  metricType: MetricType;
+  entry?: MetricEntry;
+  trigger?: ReactElement;
+}) {
   const t = useTranslations("metricEntry");
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [numberValue, setNumberValue] = useState("");
-  const [textValue, setTextValue] = useState("");
-  const [booleanValue, setBooleanValue] = useState(false);
-  const [dateValue, setDateValue] = useState("");
-  const [choiceValue, setChoiceValue] = useState("");
-  const [note, setNote] = useState("");
-  const [recordedAt, setRecordedAt] = useState(() => toLocalInputValue(new Date()));
+  const [values, setValues] = useState(() => initialValues(metricType, entry));
 
-  function reset() {
-    setNumberValue("");
-    setTextValue("");
-    setBooleanValue(false);
-    setDateValue("");
-    setChoiceValue("");
-    setNote("");
-    setRecordedAt(toLocalInputValue(new Date()));
+  function handleOpenChange(nextOpen: boolean) {
+    if (nextOpen) setValues(initialValues(metricType, entry));
+    setOpen(nextOpen);
   }
 
   const mutation = useMutation({
-    mutationFn: metricEntries.create,
+    mutationFn: (data: CreateMetricEntryInput) =>
+      entry ? metricEntries.update(entry.id, data) : metricEntries.create(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: metricEntriesQueryKey(metricType.id) });
       queryClient.invalidateQueries({ queryKey: metricAggregatePrefixKey(metricType.id) });
-      toast.success(t("logged"));
-      reset();
+      toast.success(entry ? t("updated") : t("logged"));
       setOpen(false);
     },
     onError: (error) => {
-      toast.error(error instanceof ApiError ? error.message : t("logFailed"));
+      toast.error(error instanceof ApiError ? error.message : entry ? t("updateFailed") : t("logFailed"));
     },
   });
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
-    if (metricType.value_type === "choice" && !choiceValue) {
+    if (metricType.value_type === "choice" && !values.choiceValue) {
       toast.error(t("choiceRequired"));
       return;
     }
     const value =
       metricType.value_type === "number"
-        ? Number(numberValue)
+        ? Number(values.numberValue)
         : metricType.value_type === "boolean"
-          ? booleanValue
+          ? values.booleanValue
           : metricType.value_type === "date"
-            ? dateValue
+            ? values.dateValue
             : metricType.value_type === "choice"
-              ? choiceValue
-              : textValue;
+              ? values.choiceValue
+              : values.textValue;
     const parsed = createMetricEntrySchema.safeParse({
       metric_type: metricType.id,
       value,
-      context: note ? { note } : null,
-      recorded_at: new Date(recordedAt).toISOString(),
+      context: values.note ? { note: values.note } : null,
+      recorded_at: new Date(values.recordedAt).toISOString(),
     });
     if (!parsed.success) {
       toast.error(parsed.error.issues[0]?.message ?? t("invalid"));
@@ -101,13 +120,15 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button>{t("trigger")}</Button>} />
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogTrigger render={trigger ?? <Button>{entry ? t("editTrigger") : t("trigger")}</Button>} />
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>{t("logTitle", { name: metricType.name })}</DialogTitle>
-            <DialogDescription>{t("logDescription")}</DialogDescription>
+            <DialogTitle>
+              {entry ? t("editTitle", { name: metricType.name }) : t("logTitle", { name: metricType.name })}
+            </DialogTitle>
+            <DialogDescription>{entry ? t("editDescription") : t("logDescription")}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             {metricType.value_type === "number" && (
@@ -119,8 +140,8 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
                   id="value"
                   type="number"
                   step="any"
-                  value={numberValue}
-                  onChange={(e) => setNumberValue(e.target.value)}
+                  value={values.numberValue}
+                  onChange={(e) => setValues((v) => ({ ...v, numberValue: e.target.value }))}
                   required
                 />
               </div>
@@ -130,8 +151,8 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
                 <Label htmlFor="value">{t("value")}</Label>
                 <Input
                   id="value"
-                  value={textValue}
-                  onChange={(e) => setTextValue(e.target.value)}
+                  value={values.textValue}
+                  onChange={(e) => setValues((v) => ({ ...v, textValue: e.target.value }))}
                   required
                 />
               </div>
@@ -139,7 +160,11 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
             {metricType.value_type === "boolean" && (
               <div className="flex items-center justify-between">
                 <Label htmlFor="value">{t("value")}</Label>
-                <Switch id="value" checked={booleanValue} onCheckedChange={setBooleanValue} />
+                <Switch
+                  id="value"
+                  checked={values.booleanValue}
+                  onCheckedChange={(checked) => setValues((v) => ({ ...v, booleanValue: checked }))}
+                />
               </div>
             )}
             {metricType.value_type === "date" && (
@@ -148,8 +173,8 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
                 <Input
                   id="value"
                   type="date"
-                  value={dateValue}
-                  onChange={(e) => setDateValue(e.target.value)}
+                  value={values.dateValue}
+                  onChange={(e) => setValues((v) => ({ ...v, dateValue: e.target.value }))}
                   required
                 />
               </div>
@@ -159,8 +184,8 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
                 <Label>{t("value")}</Label>
                 <Select
                   items={Object.fromEntries(metricType.choices.map((c) => [c.code, c.label]))}
-                  value={choiceValue}
-                  onValueChange={(v) => setChoiceValue(v ?? "")}
+                  value={values.choiceValue}
+                  onValueChange={(v) => setValues((prev) => ({ ...prev, choiceValue: v ?? "" }))}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder={t("choicePlaceholder")} />
@@ -180,14 +205,18 @@ export function CreateMetricEntryDialog({ metricType }: { metricType: MetricType
               <Input
                 id="recorded-at"
                 type="datetime-local"
-                value={recordedAt}
-                onChange={(e) => setRecordedAt(e.target.value)}
+                value={values.recordedAt}
+                onChange={(e) => setValues((v) => ({ ...v, recordedAt: e.target.value }))}
                 required
               />
             </div>
             <div className="space-y-2">
               <Label htmlFor="note">{t("note")}</Label>
-              <Input id="note" value={note} onChange={(e) => setNote(e.target.value)} />
+              <Input
+                id="note"
+                value={values.note}
+                onChange={(e) => setValues((v) => ({ ...v, note: e.target.value }))}
+              />
             </div>
           </div>
           <DialogFooter>

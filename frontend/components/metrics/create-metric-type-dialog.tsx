@@ -49,6 +49,7 @@ export function CreateMetricTypeDialog() {
   const [valueType, setValueType] = useState<ValueType>("number");
   const [aggregation, setAggregation] = useState<Aggregation>("");
   const [isComputed, setIsComputed] = useState(false);
+  const [isSingleton, setIsSingleton] = useState(false);
   const [options, setOptions] = useState<ChoiceOptionRow[]>([emptyOptionRow()]);
 
   function reset() {
@@ -57,6 +58,7 @@ export function CreateMetricTypeDialog() {
     setValueType("number");
     setAggregation("");
     setIsComputed(false);
+    setIsSingleton(false);
     setOptions([emptyOptionRow()]);
   }
 
@@ -104,6 +106,7 @@ export function CreateMetricTypeDialog() {
       value_type: valueType,
       aggregation,
       is_computed: isComputed,
+      is_singleton: isSingleton,
       choices,
     });
     if (!parsed.success) {
@@ -234,6 +237,13 @@ export function CreateMetricTypeDialog() {
                 <p className="text-xs text-muted-foreground">{t("computedHint")}</p>
               </div>
               <Switch id="mt-computed" checked={isComputed} onCheckedChange={setIsComputed} />
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label htmlFor="mt-singleton">{t("singleton")}</Label>
+                <p className="text-xs text-muted-foreground">{t("singletonHint")}</p>
+              </div>
+              <Switch id="mt-singleton" checked={isSingleton} onCheckedChange={setIsSingleton} />
             </div>
           </div>
           <DialogFooter>

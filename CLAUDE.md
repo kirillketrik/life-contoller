@@ -88,7 +88,11 @@ types (weight, blood sugar, insulin dose, water intake, etc. are all just data).
 - **`MetricType`** (admin-defined): `name`, `unit`, `value_type` (`number` / `text` / `boolean` /
   `date` / `choice`), optional `aggregation` hint (`sum` / `last` / `avg`), `is_computed` (marks a
   virtual metric type whose values are derived via a `FormulaDefinition` rather than logged
-  directly — see "Computed metrics" below), `created_by`.
+  directly — see "Computed metrics" below), `is_singleton` (marks a metric type that holds one
+  fact about the user rather than a time series — e.g. Sex, Date of birth — so a user edits their
+  one `MetricEntry` instead of accumulating new ones; enforced server-side in
+  `MetricEntrySerializer.validate` on create, same "reject — edit the existing one instead"
+  pattern as `MetricThreshold`'s per-user uniqueness check), `created_by`.
 - **`MetricTypeChoice`**: the fixed option list for a `choice`-valued `MetricType` (e.g. Sex:
   male/female; Activity Level: sedentary/light/moderate/active/very_active). Each option has a
   stable `code` (what `MetricEntry.value` stores and what formulas compare against — never shown
@@ -379,6 +383,31 @@ Decisions made during the choice-metrics/unit-localization/formula-engine work
   first version omitted this and rendered BMI's `weight / (height/100)^2` as the flat, misleading
   `Вес ÷ Рост ÷ 100 ^ 2`; always-parenthesizing trades a few redundant parens for a guarantee it
   can never be misread.
+- **`MetricType.is_singleton`** (migration `0009_metrictype_is_singleton`, bundling the schema
+  `AddField` with a `RunPython` data backfill in one file, same shape as `0005`'s data migration)
+  fixes a UX gap: Sex/Date of birth are one-time facts, not a time series, so letting a user
+  repeatedly "add" entries for them was confusing and left stale rows a formula could pick up by
+  `recorded_at` accident. Enforcement lives in `MetricEntrySerializer.validate` (reject a second
+  create for the same user+metric type, same "edit the existing one instead" error shape as
+  `MetricThresholdSerializer`'s per-user uniqueness check) — deliberately not a DB `UniqueConstraint`
+  like `MetricThreshold`'s, since existing pre-flag data could already contain duplicates and a
+  constraint would break the migration; the serializer check is sufficient since it's the only
+  write path. `seed_metrics.py` sets it via `SINGLETON_METRIC_KEYS = {"dob", "sex"}` in each
+  type's `defaults=` (fresh installs only — `get_or_create` defaults don't touch already-existing
+  rows, hence the migration's data backfill for pre-existing dev/prod data). Activity Level stays
+  non-singleton on purpose: unlike Sex/DOB it's a state that can legitimately change over time.
+- **`MetricEntryDialog`** (`frontend/components/metrics/metric-entry-dialog.tsx`, replaces the old
+  create-only `create-metric-entry-dialog.tsx`) does both create and edit from one component — pass
+  an optional `entry` prop and it switches which mutation (`metricEntries.create` vs. the new
+  `metricEntries.update`) runs on submit, re-seeding its value-type-branched form state from `entry`
+  on open (same "seed from the source of truth when opened" pattern as `ThresholdConfigDialog`).
+  This is also what makes the singleton UX work with no separate code path: the entry list page
+  passes `entry={entries[0]}` instead of `undefined` when `metricType.is_singleton` is true, which
+  flips the top-of-page button from "log a value" to "edit the value" once one exists. Per-row edit
+  uses the same component with a custom icon-button `trigger` prop. `DeleteMetricEntryButton`
+  (`delete-metric-entry-button.tsx`) is the new `alert-dialog` shadcn primitive's first use in this
+  app — added via `pnpm dlx shadcn add alert-dialog` — for the destructive-delete confirm, matching
+  the "confirm before an irreversible action" pattern rather than a bare `window.confirm`.
 
 ## Directory structure
 
@@ -452,7 +481,7 @@ life-controller/
     │       │   └── builder/page.tsx   # drag-and-drop formula builder (create-only, see "Computed metrics")
     │       └── metrics/
     │           ├── page.tsx           # MetricType list + create (admin-gated)
-    │           └── [id]/page.tsx      # dashboard (chart/summary/time-in-range) + entry list/create
+    │           └── [id]/page.tsx      # dashboard (chart/summary/time-in-range) + entry list/create/edit/delete
     ├── components/
     │   ├── ui/                      # shadcn/ui primitives only
     │   ├── layout/
@@ -467,8 +496,9 @@ life-controller/
     │   │   ├── metric-dashboard.tsx         # timeframe selector + chart + summary stats
     │   │   ├── threshold-config.tsx         # per-user threshold dialog + useMetricThreshold hook
     │   │   ├── favorite-toggle.tsx          # star toggle button + useIsFavoriteMetric hook
-    │   │   ├── create-metric-entry-dialog.tsx     # renders a choice <Select> for value_type="choice"
-    │   │   ├── create-metric-type-dialog.tsx      # incl. the choice-option row editor
+    │   │   ├── metric-entry-dialog.tsx      # create AND edit (pass `entry`) — one form, value-type branching
+    │   │   ├── delete-metric-entry-button.tsx     # icon button + AlertDialog confirm, per entry row
+    │   │   ├── create-metric-type-dialog.tsx      # incl. the choice-option row editor and is_singleton switch
     │   │   └── formula-builder/             # canvas/palettes/preview + use-formula-builder.ts state hook
     │   ├── auth-provider.tsx        # current-user context, backed by TanStack Query
     │   ├── query-provider.tsx
@@ -548,7 +578,7 @@ Installing a new package or shadcn component works the same way, e.g.
 | Dashboards & computed metrics (Lightweight Charts candlestick/line dashboard with timeframe selector, timeframe-aggregation API, per-user `MetricThreshold` + time-in-range stat, `date` value type, computed `MetricType`s via `FormulaDefinition`/`bmi`/`body_fat_navy`/`tdee_mifflin`, admin-only formulas UI) | `feature/metrics-module` | Implemented, manually verified end-to-end via browser (chart in light/dark, timeframe controls, threshold + time-in-range, BMI computed end-to-end from Weight/Height entries, admin-only formulas gating checked both in the UI and directly against the API) |
 | UI redesign, localization & DX (fixed sidebar with collapsible nav + user footer menu; dashboard landing page with KPI cards + chart-card grid via new `GET /api/dashboard-summary/`; Geist Variable global font; Russian-first `next-intl` localization across every page/component incl. shadcn primitives; 4 project skills — `ui-design`/`architecture`/`crud-resource`/`dashboard-chart-card`) | `feature/ui-redesign-i18n` (branched off `main`, which was created from `feature/metrics-module`'s tip) | Implemented, manually verified end-to-end via browser (Russian copy on every page, sidebar collapse/expand + active-item highlight + admin-group gating, metric-type create flow, dashboard KPI/chart cards with real data, light/dark theme); backend: 96/96 tests passing incl. 4 new for `dashboard-summary`, `ruff check .` clean after fixing a pre-existing exclude-config bug; frontend: `eslint`/`tsc` clean |
 | Favorite metric charts on the dashboard (`FavoriteMetric` per-user through-model; favorite/unfavorite/list/reorder actions on `MetricTypeViewSet`, ownership-scoped; dashboard "Избранное" section reusing `ChartCard`+`MetricChart`, capped at 8 with a "N of M" note; star toggle on the metric detail page and every favorite card, optimistic with rollback) | `feature/favorite-metrics` | Implemented, manually verified end-to-end via browser as two different users (favorite/unfavorite/idempotency, per-user scoping — one user's favorites and chart data never show another's, computed-metric-type favoriting via BMI/TDEE, toggle state in sync between the detail page and dashboard card); backend: 111/111 tests passing incl. 15 new for favorites, `ruff check .` clean; frontend: `eslint`/`tsc` clean. Reorder endpoint is implemented+tested but not yet wired to any frontend drag-and-drop UI — noted as a follow-up above. |
-| Choice-type metrics (`MetricType.value_type="choice"` + `MetricTypeChoice`, Sex/Activity Level converted to it), unit localization (`kcal`→`ккал`), and a unified AST formula engine (`apps/metrics/formula_engine/` replaces hardcoded per-formula Python; BMI/body-fat/TDEE reseeded as ordinary `FormulaDefinition` rows) with a drag-and-drop visual builder (`@dnd-kit`, create-only) incl. live preview and save-time validation (missing metric type / division by zero / circular reference) | `feature/formula-engine` | Implemented, manually verified end-to-end via browser (choice metric type + option creation, choice-select entry logging, drag-and-drop formula build with live preview computing a real value, save + Russian-rendered display on the formulas list, precedence-correct parenthesization); backend: 139/139 tests passing incl. new formula-engine/choice-metric suites, `ruff check .` clean; frontend: `eslint`/`tsc` clean |
+| Choice-type metrics (`MetricType.value_type="choice"` + `MetricTypeChoice`, Sex/Activity Level converted to it), unit localization (`kcal`→`ккал`), and a unified AST formula engine (`apps/metrics/formula_engine/` replaces hardcoded per-formula Python; BMI/body-fat/TDEE reseeded as ordinary `FormulaDefinition` rows) with a drag-and-drop visual builder (`@dnd-kit`, create-only) incl. live preview and save-time validation (missing metric type / division by zero / circular reference); `MetricType.is_singleton` for one-time-fact metric types (Sex, Date of birth) with create-time enforcement and a UI that swaps "add" for "edit" once a value exists; `MetricEntry` edit/delete wired into the entry list UI (`MetricEntryDialog` create+edit, `DeleteMetricEntryButton` with an `alert-dialog` confirm) — the backend `ModelViewSet` already supported PATCH/DELETE, only the frontend was missing it | `feature/formula-engine` | Implemented, manually verified end-to-end via browser (choice metric type + option creation, choice-select entry logging, drag-and-drop formula build with live preview computing a real value, save + Russian-rendered display on the formulas list, precedence-correct parenthesization, singleton metric type hides "add" in favor of "edit" once a value exists and rejects a second entry via the API, per-row edit/delete with delete confirmation); backend: 143/143 tests passing incl. new singleton-enforcement tests, `ruff check .` clean on every file this pass touched (18 pre-existing `E501` line-length errors in untouched `tests/metrics/test_thresholds.py`/`test_permissions.py` predate this branch); frontend: `eslint`/`tsc` clean |
 
 `MetricEntry` and `MetricThreshold` are **ownership-based**, not admin-gated: any authenticated
 user creates/edits/deletes their own entries and thresholds; only `MetricType` definitions and

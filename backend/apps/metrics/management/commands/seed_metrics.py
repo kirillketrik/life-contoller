@@ -36,6 +36,10 @@ DATE_METRIC_TYPES: dict[str, str] = {
     "dob": "Дата рождения",
 }
 
+# Metric types that hold a single fact about the user rather than a time
+# series — the user edits their one entry instead of adding new ones.
+SINGLETON_METRIC_KEYS = {"dob", "sex"}
+
 # key -> (name, [(code, label, numeric_value | None), ...])
 CHOICE_METRIC_TYPES: dict[str, tuple[str, list[tuple[str, str, float | None]]]] = {
     "sex": (
@@ -89,14 +93,24 @@ class Command(BaseCommand):
 
         for key, name in DATE_METRIC_TYPES.items():
             metric_type, created = MetricType.objects.get_or_create(
-                name=name, defaults={"value_type": ValueType.DATE, "created_by": creator}
+                name=name,
+                defaults={
+                    "value_type": ValueType.DATE,
+                    "is_singleton": key in SINGLETON_METRIC_KEYS,
+                    "created_by": creator,
+                },
             )
             input_types[key] = metric_type
             self._report(name, created)
 
         for key, (name, options) in CHOICE_METRIC_TYPES.items():
             metric_type, created = MetricType.objects.get_or_create(
-                name=name, defaults={"value_type": ValueType.CHOICE, "created_by": creator}
+                name=name,
+                defaults={
+                    "value_type": ValueType.CHOICE,
+                    "is_singleton": key in SINGLETON_METRIC_KEYS,
+                    "created_by": creator,
+                },
             )
             input_types[key] = metric_type
             self._report(name, created)

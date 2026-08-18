@@ -34,6 +34,7 @@ class MetricTypeSerializer(serializers.ModelSerializer):
             "value_type",
             "aggregation",
             "is_computed",
+            "is_singleton",
             "created_by",
             "created_at",
             "updated_at",
@@ -105,6 +106,17 @@ class MetricEntrySerializer(serializers.ModelSerializer):
                     )
                 }
             )
+        if metric_type is not None and metric_type.is_singleton and self.instance is None:
+            owner = self.context["request"].user
+            if MetricEntry.objects.filter(metric_type=metric_type, owner=owner).exists():
+                raise serializers.ValidationError(
+                    {
+                        "metric_type": (
+                            "This metric type only holds a single value — edit the existing "
+                            "entry instead of creating a new one."
+                        )
+                    }
+                )
         if metric_type is not None and value is not None:
             self._validate_value_matches_type(metric_type, value)
         return attrs

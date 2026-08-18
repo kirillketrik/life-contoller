@@ -63,3 +63,36 @@ def test_create_sets_owner_from_request(rf, regular_user):
     assert serializer.is_valid(), serializer.errors
     entry = serializer.save()
     assert entry.owner == regular_user
+
+
+def test_singleton_metric_rejects_second_entry(rf, regular_user):
+    metric_type = baker.make("metrics.MetricType", value_type=ValueType.NUMBER, is_singleton=True)
+    baker.make("metrics.MetricEntry", metric_type=metric_type, owner=regular_user, value=1)
+    serializer = _serialize(rf, regular_user, metric_type, 2)
+    assert not serializer.is_valid()
+    assert "metric_type" in serializer.errors
+
+
+def test_singleton_metric_allows_first_entry(rf, regular_user):
+    metric_type = baker.make("metrics.MetricType", value_type=ValueType.NUMBER, is_singleton=True)
+    serializer = _serialize(rf, regular_user, metric_type, 1)
+    assert serializer.is_valid(), serializer.errors
+
+
+def test_singleton_metric_allows_another_users_first_entry(rf, regular_user, other_user):
+    metric_type = baker.make("metrics.MetricType", value_type=ValueType.NUMBER, is_singleton=True)
+    baker.make("metrics.MetricEntry", metric_type=metric_type, owner=other_user, value=1)
+    serializer = _serialize(rf, regular_user, metric_type, 2)
+    assert serializer.is_valid(), serializer.errors
+
+
+def test_singleton_metric_allows_editing_existing_entry(rf, regular_user):
+    metric_type = baker.make("metrics.MetricType", value_type=ValueType.NUMBER, is_singleton=True)
+    entry = baker.make("metrics.MetricEntry", metric_type=metric_type, owner=regular_user, value=1)
+    serializer = MetricEntrySerializer(
+        entry,
+        data={"value": 2},
+        partial=True,
+        context={"request": _request(rf, regular_user)},
+    )
+    assert serializer.is_valid(), serializer.errors

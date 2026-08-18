@@ -22,6 +22,7 @@ export const metricTypeSchema = z.object({
   value_type: valueTypeSchema,
   aggregation: aggregationSchema,
   is_computed: z.boolean(),
+  is_singleton: z.boolean(),
   created_by: z.number().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -44,6 +45,7 @@ export const createMetricTypeSchema = z
     value_type: valueTypeSchema,
     aggregation: aggregationSchema,
     is_computed: z.boolean().optional(),
+    is_singleton: z.boolean().optional(),
     choices: z.array(createChoiceOptionSchema).optional(),
   })
   .refine(

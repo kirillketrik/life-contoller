@@ -24,6 +24,12 @@ class MetricType(models.Model):
     `is_computed` marks a virtual metric type whose values are derived from
     other metric types via a `FormulaDefinition` rather than logged directly
     through `MetricEntry` — see `apps.metrics.formula_engine`.
+
+    `is_singleton` marks a metric type that holds one fact about the user
+    rather than a time series (e.g. Sex, Date of birth) — a user should edit
+    their one `MetricEntry` for it, not accumulate new ones. Enforced in
+    `MetricEntrySerializer.validate` on create; the frontend hides the "add
+    entry" affordance in favor of "edit" once an entry exists.
     """
 
     name = models.CharField(max_length=100, unique=True)
@@ -31,6 +37,7 @@ class MetricType(models.Model):
     value_type = models.CharField(max_length=16, choices=ValueType.choices)
     aggregation = models.CharField(max_length=16, choices=Aggregation.choices, blank=True)
     is_computed = models.BooleanField(default=False)
+    is_singleton = models.BooleanField(default=False)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

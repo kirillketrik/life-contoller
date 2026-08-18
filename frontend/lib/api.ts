@@ -129,6 +129,11 @@ export const metricEntries = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+  update: (id: number, data: Partial<CreateMetricEntryInput>): Promise<MetricEntry> =>
+    request(metricEntrySchema, `/api/metric-entries/${id}/`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
   delete: (id: number) => requestVoid(`/api/metric-entries/${id}/`, { method: "DELETE" }),
 };
 
