@@ -287,7 +287,9 @@ life-controller/
 │   │       ├── views.py
 │   │       ├── permissions.py
 │   │       ├── admin.py
-│   │       └── urls.py
+│   │       ├── urls.py
+│   │       └── management/commands/
+│   │           └── seed_metrics.py    # idempotent baseline MetricTypes + FormulaDefinitions
 │   └── tests/                     # all backend tests live here, mirroring apps/
 │       ├── conftest.py            # fixtures shared across every test package
 │       ├── core/
@@ -359,6 +361,15 @@ First-time setup (migrations run automatically on backend startup; you still nee
 
 ```bash
 docker compose exec backend python manage.py createsuperuser
+```
+
+Seed baseline `MetricType`s/`FormulaDefinition`s (height, sex, activity level, neck/waist/hip
+circumference, date of birth, weight, plus the `bmi`/`body_fat_navy`/`tdee_mifflin`
+`FormulaDefinition`s wired to them — see `apps/metrics/management/commands/seed_metrics.py`).
+Idempotent (matches on `MetricType.name`), safe to re-run:
+
+```bash
+docker compose exec backend python manage.py seed_metrics
 ```
 
 Backend tests and lint (also runnable outside Docker via `uv run` from `backend/`):
