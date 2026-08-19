@@ -75,6 +75,7 @@ Today's rules, all in `apps/metrics/permissions.py`:
 | `MetricThreshold` (`MetricThresholdPermission`, **ownership**) | own thresholds only | any authenticated user, for their own thresholds only (no admin override — thresholds are a personal preference) |
 | `FormulaDefinition` (`FormulaDefinitionPermission`, role-gated via `PermissionService`) | admins only | admins only |
 | `FavoriteMetric` (**ownership** — exposed as actions on `MetricTypeViewSet`, not a separate permission class; see "Favorite metrics" below) | own favorites only | any authenticated user, for their own favorites only |
+| `MetricImportSettings` / bulk import (**ownership** — exposed as actions on `MetricTypeViewSet`; see "Bulk metric-entry import" below) | own saved template only | any authenticated user, for their own data — bulk import is just repeated `MetricEntry` creation |
 
 The important asymmetry: **defining** a metric type is an admin action (it's shared, global
 config), but **logging a reading** against one is something every user does for themselves — so
@@ -155,6 +156,77 @@ same as `MetricThreshold`; favoriting a metric never affects what other users se
   optional `action` slot for the toggle button) and `MetricChart` — no second chart component —
   and caps display at 8 cards, showing a "N of M" note rather than a dedicated favorites page if
   there are more (the metric detail page is still reachable for every metric, favorited or not).
+
+### Bulk metric-entry import
+Lets a user paste or upload many `MetricEntry` rows at once for a single metric type, using a
+positional **template-builder** pattern adapted from a prior project (`kirillketrik/accounting`'s
+bulk-asset-create page) rather than a CSV-header column-mapper: pasted/uploaded text is one record
+per line, split positionally into `{value}` and `{date}` tokens by a user-built
+`{field1}{separator}{field2}` template — no header row, no per-column mapping UI.
+
+- **Target metric selection** excludes computed (`is_computed`) and singleton (`is_singleton`)
+  metric types — both are enforced again server-side (`400`) even though the picker never offers
+  them, same defense-in-depth as `/aggregate/`'s value-type check.
+- **`MetricImportSettings`** (`user`, `metric_type`, `template`, `separator`, `date_format`,
+  `decimal_separator`, unique per user+metric type) is the "set as default" template a user saves
+  per metric type — **not** one flat per-user setting like the reference implementation had,
+  because different metric types have meaningfully different import shapes worth reusing (a fixed
+  "date;value" export for one metric, "value date" pasted from somewhere else for another).
+  Exposed as an ownership-scoped `GET`/`PUT /api/metric-types/<id>/import-settings/` action pair on
+  `MetricTypeViewSet` (same "personal action lives as an action on this viewset" pattern as
+  favorites) — `GET` returns `null` rather than `404` when unset, so the frontend always gets a
+  200 and just checks for `null` to decide whether to pre-fill the builder or start empty.
+- **Client/server parsing split**: `frontend/lib/metric-bulk-parse.ts` (`parseImportTemplate`,
+  `parseImportText`) only does the positional *splitting* — template validation (separator
+  required, known fields only, no duplicates, `{value}` must be present) and turning each line into
+  raw `{value, date}` string tokens. The actual value *parsing* — numeric (respecting
+  `decimal_separator`), choice code/label matching (case-insensitive against the metric type's
+  actual `MetricTypeChoice` rows), boolean/text/date-typed values, and `{date}` parsing via the
+  configured `date_format` — happens server-side in `apps/metrics/services.py`'s
+  `resolve_bulk_import_items`, the single function shared by both endpoints below (mirrors the
+  reference's "one parsing path for preview and create").
+- **`resolve_bulk_import_items`** classifies every row as `new` / `duplicate_skip` /
+  `duplicate_overwrite` / `invalid` (an `error_code`, not prose, same "stable code the frontend maps
+  to copy" convention as the formula engine's validation errors) — a row's fate already reflects the
+  run's chosen `duplicate_policy`, so preview and create can never disagree about what a row will
+  do. Duplicate detection compares `recorded_at`'s **date** (not exact timestamp) against the
+  user's existing entries for that metric type — a row whose template has no `{date}` field at all
+  (a valid, if unusual, template) always resolves to `new`, since there's nothing to compare against.
+  A resolved `decimal_separator=","` row only strips `.` as a thousands separator when the raw value
+  actually contains a `,` — a plain `"70.5"` is left untouched rather than mangled into `"705"`,
+  since treating every `.` as a thousands separator regardless of context silently corrupts an
+  already-unambiguous number.
+- **`execute_bulk_import`** (also `services.py`) persists a resolved batch: `new` rows are created,
+  `duplicate_overwrite` rows update the existing entry's `value` in place (same row id, not a
+  delete+recreate), `duplicate_skip`/`invalid` rows are left untouched — partial success, a bad or
+  duplicate row never blocks the rest of the batch, same rule as the reference's bulk-asset-create.
+- Two `MetricTypeViewSet` actions, both ownership-scoped (`IsAuthenticated`, queries scoped to
+  `request.user`) via the same `get_permissions()` override that already carves out the favorite
+  actions: `POST /api/metric-types/<id>/import/preview/` resolves and returns per-row status
+  without persisting; `POST /api/metric-types/<id>/import/` resolves *and* persists, returning
+  `created_count`/`updated_count`/`skipped_count`/`invalid_count` plus the same per-item list.
+  Both take the same body shape (`items`, `date_format`, `decimal_separator`, `duplicate_policy`).
+- **Frontend**: `components/shared/template-builder.tsx`/`separator-field.tsx` are the ported,
+  domain-agnostic versions of the reference's components — generic over a `TField extends string`
+  field union (here `"value" | "date"`) rather than hardcoded to metric-import fields, so a future
+  bulk-import-shaped feature reuses them instead of copy-pasting. `components/metrics/bulk-import/`
+  (`bulk-import.tsx` + `use-bulk-import.ts` hook + `preview-table.tsx`) follows the
+  `formula-builder`-style split of state/derivation (the hook) from presentation (the components) —
+  the hook owns the selected metric type, the form state (seeded from the saved
+  `MetricImportSettings` the moment it's fetched, via React's "adjust state during render" pattern
+  rather than a `useEffect` `setState`, per this project's lint rules), and the client-side parsed
+  rows. The page (`app/[locale]/metrics/import/page.tsx`) supports paste, `.csv` upload, and `.txt`
+  upload — all three just fill the same textarea via `FileReader`, there's no separate CSV-specific
+  code path, matching the "no header parsing, one raw-text field" scope decision above. An
+  "advanced mode" switch swaps the `TemplateBuilder` buttons for a raw text input bound to the same
+  template string, for hand-authoring a template the button UI can't express (matching the formula
+  builder's "advanced" affordances elsewhere in this app).
+- **Known DRF quirk**: `CharField`'s default `trim_whitespace=True` reduces a space-only
+  `separator` (a common, meaningful separator value) to `""` and then rejects it as blank —
+  `MetricImportSettingsSerializer.separator` and `BulkImportRequestSerializer.date_format`
+  explicitly set `trim_whitespace=False` to avoid this. Any other free-text field that could
+  legitimately be pure whitespace needs the same override; a `ModelSerializer`'s auto-generated
+  `CharField` for such a model field won't have it by default.
 
 ### Timeframe aggregation (OHLC buckets, summary, time-in-range)
 `backend/apps/metrics/aggregation.py` holds all bucketing/statistics logic, deliberately decoupled
@@ -459,7 +531,7 @@ life-controller/
 │   │   │   ├── serializers.py
 │   │   │   ├── views.py           # LoginView / LogoutView / MeView
 │   │   │   └── urls.py
-│   │   └── metrics/               # MetricType(+Choice) / MetricEntry / MetricThreshold / FormulaDefinition / FavoriteMetric
+│   │   └── metrics/               # MetricType(+Choice) / MetricEntry / MetricThreshold / FormulaDefinition / FavoriteMetric / MetricImportSettings
 │   │       ├── models.py
 │   │       ├── selectors.py       # all read-query logic for this app
 │   │       ├── services.py        # write-side logic beyond a serializer's create/update (nested MetricType+choices writes)
@@ -500,9 +572,13 @@ life-controller/
     │       │   └── builder/page.tsx   # drag-and-drop formula builder (create-only, see "Computed metrics")
     │       └── metrics/
     │           ├── page.tsx           # MetricType list + create (admin-gated)
-    │           └── [id]/page.tsx      # dashboard (chart/summary/time-in-range) + entry list/create/edit/delete
+    │           ├── [id]/page.tsx      # dashboard (chart/summary/time-in-range) + entry list/create/edit/delete
+    │           └── import/page.tsx    # bulk metric-entry import (template builder + paste/upload + preview)
     ├── components/
     │   ├── ui/                      # shadcn/ui primitives only
+    │   ├── shared/                  # domain-agnostic reusable widgets (not shadcn primitives)
+    │   │   ├── template-builder.tsx        # generic positional-template builder (field toggles + reorder)
+    │   │   └── separator-field.tsx         # separator picker with presets + custom-character input
     │   ├── layout/
     │   │   └── app-sidebar.tsx      # fixed sidebar: nav groups, admin gating, user footer menu
     │   ├── dashboard/
@@ -518,7 +594,8 @@ life-controller/
     │   │   ├── metric-entry-dialog.tsx      # create AND edit (pass `entry`) — one form, value-type branching
     │   │   ├── delete-metric-entry-button.tsx     # icon button + AlertDialog confirm, per entry row
     │   │   ├── create-metric-type-dialog.tsx      # incl. the choice-option row editor and is_singleton switch
-    │   │   └── formula-builder/             # canvas/palettes/preview + use-formula-builder.ts state hook
+    │   │   ├── formula-builder/             # canvas/palettes/preview + use-formula-builder.ts state hook
+    │   │   └── bulk-import/                 # bulk-import.tsx + use-bulk-import.ts hook + preview-table.tsx
     │   ├── auth-provider.tsx        # current-user context, backed by TanStack Query
     │   ├── query-provider.tsx
     │   ├── theme-provider.tsx
@@ -527,6 +604,7 @@ life-controller/
         ├── api.ts                   # typed API client — parses every response with Zod
         ├── types.ts                 # Zod schemas + inferred TS types (incl. the FormulaNode AST schema)
         ├── query-keys.ts            # centralized TanStack Query key factories
+        ├── metric-bulk-parse.ts     # positional template/line splitting for bulk import (no value parsing)
         └── formula-builder/         # tokens.ts (FlatToken model + compile), render-node.ts (read-only AST render)
 ```
 
@@ -598,6 +676,7 @@ Installing a new package or shadcn component works the same way, e.g.
 | UI redesign, localization & DX (fixed sidebar with collapsible nav + user footer menu; dashboard landing page with KPI cards + chart-card grid via new `GET /api/dashboard-summary/`; Geist Variable global font; Russian-first `next-intl` localization across every page/component incl. shadcn primitives; 4 project skills — `ui-design`/`architecture`/`crud-resource`/`dashboard-chart-card`) | `feature/ui-redesign-i18n` (branched off `main`, which was created from `feature/metrics-module`'s tip) | Implemented, manually verified end-to-end via browser (Russian copy on every page, sidebar collapse/expand + active-item highlight + admin-group gating, metric-type create flow, dashboard KPI/chart cards with real data, light/dark theme); backend: 96/96 tests passing incl. 4 new for `dashboard-summary`, `ruff check .` clean after fixing a pre-existing exclude-config bug; frontend: `eslint`/`tsc` clean |
 | Favorite metric charts on the dashboard (`FavoriteMetric` per-user through-model; favorite/unfavorite/list/reorder actions on `MetricTypeViewSet`, ownership-scoped; dashboard "Избранное" section reusing `ChartCard`+`MetricChart`, capped at 8 with a "N of M" note; star toggle on the metric detail page and every favorite card, optimistic with rollback) | `feature/favorite-metrics` | Implemented, manually verified end-to-end via browser as two different users (favorite/unfavorite/idempotency, per-user scoping — one user's favorites and chart data never show another's, computed-metric-type favoriting via BMI/TDEE, toggle state in sync between the detail page and dashboard card); backend: 111/111 tests passing incl. 15 new for favorites, `ruff check .` clean; frontend: `eslint`/`tsc` clean. Reorder endpoint is implemented+tested but not yet wired to any frontend drag-and-drop UI — noted as a follow-up above. |
 | Choice-type metrics (`MetricType.value_type="choice"` + `MetricTypeChoice`, Sex/Activity Level converted to it), unit localization (`kcal`→`ккал`), and a unified AST formula engine (`apps/metrics/formula_engine/` replaces hardcoded per-formula Python; BMI/body-fat/TDEE reseeded as ordinary `FormulaDefinition` rows) with a drag-and-drop visual builder (`@dnd-kit`, create-only) incl. live preview and save-time validation (missing metric type / division by zero / circular reference); `MetricType.is_singleton` for one-time-fact metric types (Sex, Date of birth) with create-time enforcement and a UI that swaps "add" for "edit" once a value exists; `MetricEntry` edit/delete wired into the entry list UI (`MetricEntryDialog` create+edit, `DeleteMetricEntryButton` with an `alert-dialog` confirm) — the backend `ModelViewSet` already supported PATCH/DELETE, only the frontend was missing it | `feature/formula-engine` | Implemented, manually verified end-to-end via browser (choice metric type + option creation, choice-select entry logging, drag-and-drop formula build with live preview computing a real value, save + Russian-rendered display on the formulas list, precedence-correct parenthesization, singleton metric type hides "add" in favor of "edit" once a value exists and rejects a second entry via the API, per-row edit/delete with delete confirmation); backend: 143/143 tests passing incl. new singleton-enforcement tests, `ruff check .` clean on every file this pass touched (18 pre-existing `E501` line-length errors in untouched `tests/metrics/test_thresholds.py`/`test_permissions.py` predate this branch); frontend: `eslint`/`tsc` clean |
+| Bulk metric-entry import (`MetricImportSettings` per-user-per-metric-type saved template; `GET`/`PUT /api/metric-types/<id>/import-settings/` + `POST .../import/preview/` + `POST .../import/`, all ownership-scoped actions on `MetricTypeViewSet`; shared `resolve_bulk_import_items`/`execute_bulk_import` in `apps/metrics/services.py` — one parsing/classification path for preview and create; ported, domain-agnostic `TemplateBuilder`/`SeparatorField` components under `components/shared/`; `components/metrics/bulk-import/` page supporting paste + `.csv`/`.txt` upload, template builder with an advanced raw-template mode, per-row new/duplicate-skip/duplicate-overwrite/invalid preview, and a save-as-default action) | `feature/bulk-metric-import` | Implemented, manually verified end-to-end via browser (Weight metric: template built via field toggles, numeric parsing incl. decimal-separator switch, invalid/missing-value rows flagged with reasons, duplicate skip and overwrite both verified against the DB — overwrite updates the existing row in place rather than creating a new one, `.csv` file upload filling the textarea, "set as default" persisting and pre-filling on next visit after a page reload; Activity Level metric: choice-code and choice-label matching both case-insensitive, unknown value flagged invalid); backend: 172/172 tests passing incl. 29 new for bulk import (found and fixed two real bugs via manual testing: a "." wrongly treated as a thousands separator for an already-unambiguous number under `decimal_separator=","`, and DRF's default `trim_whitespace=True` rejecting a legitimate space-only separator), `ruff check .` clean on every file this pass touched; frontend: `eslint`/`tsc` clean |
 
 `MetricEntry` and `MetricThreshold` are **ownership-based**, not admin-gated: any authenticated
 user creates/edits/deletes their own entries and thresholds; only `MetricType` definitions and

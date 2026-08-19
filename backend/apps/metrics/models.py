@@ -173,6 +173,40 @@ class FavoriteMetric(models.Model):
         return f"{self.metric_type.name} favorited by {self.user}"
 
 
+class MetricImportSettings(models.Model):
+    """A user's saved default bulk-import template for one metric type.
+
+    Scoped per (user, metric_type) rather than one flat per-user setting
+    (unlike a single-shape reference implementation this was adapted from):
+    different metric types have meaningfully different import shapes a user
+    will want to reuse (e.g. a fixed "date;value" export for one metric,
+    "value date" pasted from somewhere else for another).
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="metric_import_settings"
+    )
+    metric_type = models.ForeignKey(
+        MetricType, on_delete=models.CASCADE, related_name="import_settings"
+    )
+    template = models.CharField(max_length=100)
+    separator = models.CharField(max_length=10)
+    date_format = models.CharField(max_length=50)
+    decimal_separator = models.CharField(max_length=1, default=".")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "metric_type"], name="unique_import_settings_per_user_metric_type"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"Import settings for {self.metric_type.name} ({self.user})"
+
+
 class FormulaDefinition(models.Model):
     """Defines how a computed `MetricType` (`is_computed=True`) is derived
     from other metric types. There is exactly one definition per computed
