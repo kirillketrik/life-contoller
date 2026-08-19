@@ -408,6 +408,25 @@ Decisions made during the choice-metrics/unit-localization/formula-engine work
   (`delete-metric-entry-button.tsx`) is the new `alert-dialog` shadcn primitive's first use in this
   app — added via `pnpm dlx shadcn add alert-dialog` — for the destructive-delete confirm, matching
   the "confirm before an irreversible action" pattern rather than a bare `window.confirm`.
+- **`SidebarInset` (`components/ui/sidebar.tsx`) needs `min-w-0` alongside its `flex flex-1`** —
+  without it, a flex item's minimum width defaults to its content's intrinsic width (the classic
+  flexbox min-width bug), so a wide, unwrapped table cell (e.g. a long rendered formula expression
+  on the formulas list) forced the *entire* page — including the top header bar with the sidebar
+  trigger and theme toggle — wider than the viewport, pushing right-aligned header/page-action
+  buttons off-screen. `Table`'s own `overflow-x-auto` wrapper (`components/ui/table.tsx`) only
+  works if every flex ancestor between it and the viewport can actually shrink to the available
+  width; `min-w-0` is what lets it. Any future flex-column content area added under `SidebarInset`
+  that can contain wide unwrapped content (a table, a code block) should not need its own
+  `min-w-0` fix now that the ancestor chain allows shrinking — but wide content should still get
+  its own `overflow-x-auto` scroll container (or truncation, see below) rather than assuming the
+  page will handle it.
+- **Formulas list's formula-expression cell truncates instead of wrapping**
+  (`app/[locale]/formulas/page.tsx`) — the earlier `whitespace-normal break-words max-w-[36rem]`
+  fix kept the column from forcing page overflow, but a long formula still bloated every row's
+  height. It's now a single-line `truncate` cell (capped `max-w-[28rem]`) rendered as a button;
+  clicking it opens a `Dialog` showing the computed metric type name and the full, wrapped formula
+  text. Prefer this "truncate + click-to-expand dialog" pattern over wrapping for any other
+  table cell that can hold long, unpredictable-length content.
 
 ## Directory structure
 
