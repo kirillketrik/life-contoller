@@ -117,15 +117,17 @@ types (weight, blood sugar, insulin dose, water intake, etc. are all just data).
   later on).
 
 ### Dashboard elements
-`DashboardElement` is a per-user, per-metric-type through-model (`user`, `metric_type`, five
-`show_chart`/`show_current`/`show_max`/`show_min`/`show_avg` booleans, `timeframe`,
-`custom_range_start`/`custom_range_end`, `order`, unique per user+metric type) letting a user
-choose which elements — chart, and/or current/max/min/avg — to show for a metric on their
-dashboard, and over what timeframe, all configured together as one row/block rather than a
-boolean favorite. Replaces the earlier boolean `FavoriteMetric` entirely (migration `0011`
-converts any pre-existing favorite into `show_chart=True, timeframe="all"`, carrying over
+`DashboardElement` is a per-user, per-metric-type through-model (`user`, `metric_type`, six
+`show_chart`/`show_current`/`show_max`/`show_min`/`show_avg`/`show_time_in_range` booleans,
+`timeframe`, `custom_range_start`/`custom_range_end`, `order`, unique per user+metric type) letting
+a user choose which elements — chart, and/or current/max/min/avg/time-in-range — to show for a
+metric on their dashboard, and over what timeframe, all configured together as one row/block
+rather than a boolean favorite. Replaces the earlier boolean `FavoriteMetric` entirely (migration
+`0011` converts any pre-existing favorite into `show_chart=True, timeframe="all"`, carrying over
 `order`) — per-user, not global, same as `MetricThreshold`; configuring a metric's dashboard
-elements never affects what other users see.
+elements never affects what other users see. `show_time_in_range` was added in migration `0012`,
+after the other five (`0011`), following the same "one new `show_*` boolean, default `False`"
+shape — no data migration needed since it defaults off for every existing row.
 
 - **Timeframe governs both the chart's visible range and what feeds max/min/avg** — the same
   resolved range, not two separate settings. `current` is deliberately exempt: always the single
@@ -160,6 +162,24 @@ elements never affects what other users see.
   is not an implicit side effect of saving an all-false row; the DELETE method above is the only
   way to remove a metric from the dashboard. `timeframe="custom"` requires both range dates set,
   with start not after end.
+- **Time-in-range is a dashboard element like max/min/avg, computed the same way**:
+  `selectors.dashboard_element_stats` fetches the requesting user's `MetricThreshold` for the
+  metric type (same selector `GET /aggregate/` already used) whenever `show_chart` or
+  `show_time_in_range` is set, and calls the existing `aggregation.time_in_range_percent` over the
+  same resolved-range `points` used for max/min/avg — no separate query path. `null` when
+  `show_time_in_range` is on but no threshold is configured (mirrors `MetricEntry`/`points`: a flag
+  can be enabled before there's data to back it, same "show a `—` tile rather than hide it" choice
+  as the other four elements).
+- **The chart draws the threshold's bounds as red dashed price lines**, not just the time-in-range
+  percentage: both `GET /aggregate/` and `dashboard_element_stats` include a `threshold`
+  (`{lower_bound, upper_bound}` or `null`) field alongside `points`, resolved from the same
+  `MetricThreshold` fetch above — reused rather than a second request, per the "aggregate once,
+  derive many stats" rule. `MetricChart` (`frontend/components/metrics/metric-chart.tsx`) draws
+  each non-null bound via `series.createPriceLine({..., lineStyle: LineStyle.Dashed})` in a
+  `--destructive`-adjacent red (`#dc2626` light / `#f87171` dark) — a price line, not a second
+  series, since the bound isn't part of the plotted data. Reuses the `threshold` i18n namespace's
+  `lowerBound`/`upperBound` labels (`ThresholdConfigDialog`'s own field labels) as each line's
+  title rather than introducing duplicate copy.
 - **Ownership, not role-gated**, despite living on `MetricTypeViewSet` (whose CRUD actions *are*
   role-gated via `MetricTypePermission`): `get_permissions()` overrides to plain `IsAuthenticated`
   for the `dashboard_element` action, and every query is scoped to `request.user` directly in the
@@ -272,32 +292,47 @@ per line, split positionally into `{value}` and `{date}` tokens by a user-built
   explicitly set `trim_whitespace=False` to avoid this. Any other free-text field that could
   legitimately be pure whitespace needs the same override; a `ModelSerializer`'s auto-generated
   `CharField` for such a model field won't have it by default.
+- **The `{date}` token's time-of-day is optional** — `date_format` may include time directives
+  (`%H`/`%I`/`%M`/`%S`/`%p`), in which case `services._parse_bulk_date` uses the parsed time as-is;
+  when it doesn't, the current time of day is substituted instead of midnight, so a plain date-only
+  template (the common case) doesn't silently backdate every imported entry to `00:00`. Detection
+  is a regex over `date_format` itself (`_TIME_DIRECTIVE_RE`), not the parsed value, since a
+  format without a time directive can never produce a non-midnight `strptime` result to test
+  against. The date component stays required either way — only the time half is optional. A raw
+  time with no timezone info is interpreted in Django's `current_tz` (`TIME_ZONE = "UTC"`), the
+  same reference frame the no-time fallback's `timezone.now()` already uses — consistent within
+  bulk import, but distinct from `MetricEntryDialog`'s single-entry form, which resolves the
+  browser's own local timezone via `datetime-local` + `toISOString()`.
 
-### Timeframe aggregation (OHLC buckets, summary, time-in-range)
-`backend/apps/metrics/aggregation.py` holds all bucketing/statistics logic, deliberately decoupled
-from the ORM — it operates on a plain `list[DataPoint]` (timestamp + numeric value), not a
-queryset, so the exact same code aggregates both stored `MetricEntry` rows and on-the-fly computed
-series (see below).
+### Timeframe aggregation (raw point series, summary, time-in-range)
+`backend/apps/metrics/aggregation.py` holds all statistics logic, deliberately decoupled from the
+ORM — it operates on a plain `list[DataPoint]` (timestamp + numeric value), not a queryset, so the
+exact same code aggregates both stored `MetricEntry` rows and on-the-fly computed series (see
+below).
 
-- **`Timeframe(unit, count)`** — a bucket width, e.g. `Timeframe(HOUR, 4)` = "4 hours". `unit` is
-  one of minute/hour/day/week/month/year.
-- **`bucketize(points, timeframe, range_start)`** → `list[OHLCBucket]` (`open`/`high`/`low`/
-  `close`/`count` per bucket). Minute/hour/day/week buckets are fixed-duration, anchored to
-  `range_start`; month/year buckets are calendar-aligned (grouped into N-unit chunks from
-  `range_start`'s month/year) since those aren't fixed durations. Empty buckets are omitted, not
-  zero-filled — sparse data just yields fewer buckets.
-- **`summarize(points)`** → min/max/avg/count across the whole range (not bucketed).
+- **Charts always plot every raw point in the range, never an aggregated/bucketed value** — a
+  product decision, not just a rendering default: an earlier version grouped points into OHLC
+  buckets (`bucketize`/`OHLCBucket`, still present in `aggregation.py` and covered by its own unit
+  tests in `test_aggregation.py`, but no longer called from `views.py`/`selectors.py`) and rendered
+  candlesticks when a bucket had real spread. Both `GET /aggregate/` and `dashboard_element_stats`
+  now return a flat `points` list (`{"timestamp", "value"}` per entry, chronological) instead of
+  `buckets` — a 1-year chart shows every individual entry logged that year, not one dot per week.
+  `timeframe_unit`/`timeframe_count` are still accepted/echoed (and `resolve_named_range` still
+  picks a nominal bucket granularity per preset) purely as a UI hint for whether the chart's x-axis
+  shows time-of-day (`MetricChart`'s `timeVisible`), not for aggregating the series itself.
+- **`summarize(points)`** → min/max/avg/count across the whole range (not bucketed) — unaffected by
+  the above, already worked over raw points.
 - **`time_in_range_percent(points, lower_bound, upper_bound)`** → entry-count-based percentage
   within `[lower_bound, upper_bound]` (inclusive of whichever bound is set), or `None` if no
   threshold is configured or no points exist. Deliberately simple (not time-weighted/interpolated)
   and kept as its own function precisely so a time-weighted mode can be added later without
   changing the API contract.
 - Exposed via `GET /api/metric-types/<id>/aggregate/?timeframe_unit=&timeframe_count=&start=&end=`
-  (or `relative_days=` instead of `start`/`end`; defaults to the last 30 days). Returns buckets +
-  summary + `time_in_range_percent` (using the requesting user's own `MetricThreshold` for that
-  metric type, or `null` if none configured) — all three reuse the same `DataPoint` list, per the
-  "aggregate once, derive many stats" rule: don't duplicate range-query logic across summary vs.
-  buckets vs. time-in-range.
+  (or `relative_days=` instead of `start`/`end`; defaults to the last 30 days). Returns the raw
+  `points` series + summary + `time_in_range_percent` (using the requesting user's own
+  `MetricThreshold` for that metric type, or `null` if none configured) — all three reuse the same
+  `DataPoint` list, per the "aggregate once, derive many stats" rule: don't duplicate range-query
+  logic across summary vs. the chart series vs. time-in-range.
 - Only `number`-valued or computed metric types can be aggregated (`400` otherwise) — charting a
   `text`/`boolean`/`date` metric isn't meaningful. The endpoint is always scoped to the requesting
   user (`apps/metrics/selectors.points_for_metric_type`), regardless of role — dashboards are
@@ -305,6 +340,10 @@ series (see below).
   (`selectors.metric_entry_list_for_user`) is scoped the same way now — no admin override — so
   this is no longer a special case relative to the entry list, just the same ownership rule
   applied in two places (see "Centralized, extensible permissions" above).
+- **`MetricChart`** (`frontend/components/metrics/metric-chart.tsx`) always renders a
+  `lightweight-charts` `LineSeries` — no candlestick branch. It deduplicates points that land on
+  the same whole second (lightweight-charts requires strictly increasing unique timestamps),
+  keeping the later value, same "last write wins" spirit as the old bucket `close`.
 
 ### Computed metrics (unified formula engine)
 A computed `MetricType` (`is_computed=True`) has no `MetricEntry` rows. Instead, `FormulaDefinition`
@@ -534,6 +573,12 @@ Decisions made during the choice-metrics/unit-localization/formula-engine work
   (`delete-metric-entry-button.tsx`) is the new `alert-dialog` shadcn primitive's first use in this
   app — added via `pnpm dlx shadcn add alert-dialog` — for the destructive-delete confirm, matching
   the "confirm before an irreversible action" pattern rather than a bare `window.confirm`.
+- **Known browser-locale quirk**: the `number`-valued field's `Input` is `type="text"` +
+  `inputMode="decimal"`, not `type="number"` — a native `type="number"` input's accepted decimal
+  separator follows the browser/OS locale, and under a Russian locale that's a comma, so typing
+  `4.4` was silently rejected (only the integer part landed). The text input accepts either `.` or
+  `,`; submit normalizes by replacing `,` with `.` before `Number(...)`. Any other free-typed
+  numeric field in this app has the same latent bug if it uses `type="number"`.
 - **`SidebarInset` (`components/ui/sidebar.tsx`) needs `min-w-0` alongside its `flex flex-1`** —
   without it, a flex item's minimum width defaults to its content's intrinsic width (the classic
   flexbox min-width bug), so a wide, unwrapped table cell (e.g. a long rendered formula expression
@@ -589,7 +634,7 @@ life-controller/
 │   │       ├── models.py
 │   │       ├── selectors.py       # all read-query logic for this app
 │   │       ├── services.py        # write-side logic beyond a serializer's create/update (nested MetricType+choices writes)
-│   │       ├── aggregation.py     # timeframe bucketing / summary / time-in-range (ORM-free)
+│   │       ├── aggregation.py     # summary / time-in-range / named ranges (ORM-free); bucketize() unused by app code, kept for its own tests
 │   │       ├── formula_engine/    # AST-based formula engine — nodes/interpreter/resolvers/validation/series/builtins
 │   │       ├── serializers.py
 │   │       ├── views.py
@@ -641,7 +686,7 @@ life-controller/
     │   │   ├── horizontal-bar-list.tsx     # categorical breakdowns (no time axis — not a chart lib)
     │   │   └── monthly-trend-chart.tsx     # lightweight-charts area series for the 12-month trend
     │   ├── metrics/                 # feature components
-    │   │   ├── metric-chart.tsx             # lightweight-charts candlestick/line wrapper
+    │   │   ├── metric-chart.tsx             # lightweight-charts line wrapper — every raw point, never bucketed
     │   │   ├── metric-dashboard.tsx         # timeframe selector + chart + summary stats
     │   │   ├── summary-stat.tsx             # shared current/min/max/avg stat tile
     │   │   ├── threshold-config.tsx         # per-user threshold dialog + useMetricThreshold hook
@@ -737,6 +782,9 @@ Installing a new package or shadcn component works the same way, e.g.
 | Per-card timeframe selector on favorite dashboard charts + 24h/7d/30d/3m/1y period-change badges (`selectors.period_changes_for_metric_type`/`aggregation.period_percent_changes`, new `period_changes` field on both `GET /aggregate/` and `GET /favorites/`; frontend `RangeSelect`/`useMetricAggregate`/`RANGE_PRESETS` extracted so the metric detail page and every favorite card share one range-picker implementation instead of two; `PeriodChangeBadges` shown via `ChartCard`'s new `titleExtra` slot and next to the detail page's `<h1>`; new `--success` CSS token alongside `--destructive` for the green/red coloring) | `fix/metric-entry-ownership-scoping` | Implemented, manually verified via browser (favorites section renders correct % values/colors/`—` placeholders for both a computed metric (BMI, no data old enough → all `—`) and a regular one (Weight, real 24h/7d/30d deltas); the detail page shows the same badges next to the metric name; API responses spot-checked directly). backend: 182/182 tests passing incl. 9 new (`TestPeriodPercentChanges` in `test_aggregation.py`, `period_changes` coverage in `test_aggregate_api.py`/`test_favorites.py`), `ruff check .` clean; frontend: `eslint`/`tsc` clean. Interactive click-through of the range dropdown was confirmed working in a follow-up pass (dispatching a real pointerdown/mousedown/pointerup/mouseup/click sequence via JS gets the Base UI popover to position correctly under this session's CDP-driven browser tool — a plain synthetic click alone left it collapsed to a 0×0 box; not a code issue, just what this popover needs from the automation layer). Hit the Granian dev-loop quirk documented above mid-session — `docker compose restart backend` was needed once for edits to actually take effect |
 | Bugfix: `PERIOD_CHANGE_LOOKBACK` (`apps/metrics/selectors.py`) was `relativedelta(years=1)` — exactly equal to the longest entry in `PERIOD_CHANGE_SPECS` ("1y") — so the period-changes points query's `range_start` landed exactly on the "1 year ago" target, leaving no older points to fall back to when nothing was recorded on that exact day. Any entry older than a year (e.g. a first-ever reading logged ~2 years back, with nothing else until recently) fell entirely outside the fetch and was invisible to `value_at_or_before`, so the `1y` (and often `3m`) badge always showed "no data" even though a genuinely comparable old point existed. Fixed by widening `PERIOD_CHANGE_LOOKBACK` to `relativedelta(years=100)` — same "100 years back" stand-in for "unbounded" the frontend's `rangeAll` preset already uses (`relativeDays: 36500`) | `fix/metric-entry-ownership-scoping` | Fixed, manually verified via browser (a Weight entry ~2 years old now correctly resolves the `1y`/`3m` badges instead of showing `—`); backend: 183/183 tests passing incl. 1 new regression test (`test_period_change_finds_data_older_than_the_period_itself`), `ruff check .` clean |
 | Dashboard elements (`DashboardElement` per-user/per-metric-type model replaces boolean `FavoriteMetric` entirely, migration `0011` backfills existing favorites as `show_chart=True, timeframe="all"`; per-metric chart/current/max/min/avg toggles + independent timeframe incl. a `custom` date-range option, configured from the metric detail page via `DashboardElementConfigDialog`, not the dashboard itself; `POST`/`PATCH`/`DELETE /api/metric-types/<id>/dashboard-element/` + `GET /api/dashboard-elements/` + `PATCH /api/dashboard-elements/reorder/`; `current` is always the latest entry regardless of timeframe; works uniformly for computed metric types with no special-casing; `GET /aggregate/` gained a `current` field instead of a new overlapping endpoint; new shared `components/metrics/summary-stat.tsx` + `components/dashboard/dashboard-element-card.tsx`) | `feature/dashboard-elements` | Implemented, manually verified end-to-end via browser (configured chart+current+max for Weight, block appeared on the dashboard with only the enabled stats; switched to a custom date range and confirmed the data resolved correctly while current stayed the single latest value; verified current stays correct even when the latest entry falls outside the selected range; BMI computed metric type configured and rendered identically to a regular metric, no special-casing; unconfigured-save validation and the explicit "Убрать с дашборда" removal flow both confirmed against the DB; light/dark theme checked). Found and fixed one real bug via manual testing: a shadcn `Button` rendered as a `Link` (the dashboard block's "reconfigure" action) needs `nativeButton={false}` or Base UI logs a console warning and degrades button semantics. backend: 191/191 tests passing incl. 36 new/updated for dashboard elements and `/aggregate/`'s `current` field, `ruff check .` clean on every file this pass touched (18 pre-existing `E501` errors in untouched test files predate this branch); frontend: `eslint`/`tsc` clean. Hit both documented dev-loop quirks mid-session (stale Granian reload after a mid-edit import error, stale Turbopack HMR) — restarting the respective container fixed each |
+| Two small bugfixes: (1) a `number`-valued `MetricEntry`'s value `Input` was `type="number"`, whose accepted decimal separator follows browser/OS locale — under Russian locale that's a comma, so typing `4.4` silently dropped the fractional part; switched to `type="text"` + `inputMode="decimal"`, normalizing `,`→`.` at submit (see "Computed metrics"-adjacent `MetricEntryDialog` notes above). (2) Bulk import's `{date}` token always discarded any parsed time-of-day and hardcoded midnight (`time.min`) as `recorded_at`'s time component; `services._parse_bulk_date` now returns a full `datetime`, using the parsed time when `date_format` contains a time directive (`%H`/`%I`/`%M`/`%S`/`%p`, detected via regex on the format string) and falling back to the current time of day otherwise — date stays required, only time is optional | `feature/dashboard-elements` | Fixed, manually verified via browser (typed `4.4` into the Уровень сахара number field and confirmed it saved and displayed as `4.4`, not `4`; bulk-import preview with a date-only format showed the actual current time instead of `00:00:00`, and a format with `%H:%M` correctly carried the parsed time through to `recorded_at`); backend: 193/193 tests passing incl. 2 new regression tests (`test_date_only_format_uses_current_time_not_midnight`, `test_date_format_with_time_directive_preserves_parsed_time`), `ruff check .` clean on every file this pass touched (18 pre-existing `E501` errors in untouched test files predate this branch); frontend: `eslint`/`tsc` clean. Hit the documented stale-Turbopack-HMR dev-loop quirk once mid-session — `docker compose restart frontend` fixed it |
+| Bugfix: charts always show candlesticks-when-spread + OHLC-bucketed values, contrary to product intent — `MetricChart` dropped its `shouldRenderCandlesticks` heuristic/`CandlestickSeries` branch entirely (line-only, no exceptions for any timeframe or data shape), and both `GET /aggregate/` and `dashboard_element_stats` stopped calling `bucketize` for the chart series, returning a flat `points` list (every raw entry in range, chronological) instead of `buckets` — a `1y`/`3y`/`all` chart previously collapsed many entries into one bucket's `close` value per week/month, hiding all the intermediate readings; now every logged value is its own point on the line, at any timeframe. `bucketize`/`OHLCBucket` stay in `aggregation.py` (still covered by their own unit tests) since nothing about the underlying utility was wrong — only the chart-facing call sites were removed. `MetricChart` dedupes points landing on the same whole second (`lightweight-charts` requires strictly increasing unique timestamps), keeping the later value | `feature/dashboard-elements` | Fixed, manually verified end-to-end (seeded 6 same-day blood-sugar entries with real spread — previously enough to trigger candlesticks in a day bucket — and confirmed via a direct API check that `/aggregate/` now returns all 6 as individual `points`, not one bucket; summary min/max/avg on the metric detail page matched the raw entries); backend: 193/193 tests passing incl. `test_aggregate_api.py`/`test_dashboard_elements.py` updated from bucket to point-count assertions, `ruff check .` clean on every file this pass touched; frontend: `eslint`/`tsc` clean. Hit the documented stale-Granian-reload dev-loop quirk mid-session (the aggregate endpoint kept serving the old `buckets` shape after the `views.py`/`selectors.py` edit) — `docker compose restart backend` fixed it |
+| Threshold bound lines on charts + time-in-range as a dashboard element (`GET /aggregate/` and `dashboard_element_stats` both gained a `threshold` field — `{lower_bound, upper_bound}` or `null`, resolved from the same `MetricThreshold` fetch each already did for `time_in_range_percent` — and `MetricChart` draws each non-null bound as a red dashed `series.createPriceLine`; new `DashboardElement.show_time_in_range` boolean (migration `0012`), computed via the existing `aggregation.time_in_range_percent` over the same resolved-range points used for max/min/avg, wired into `DashboardElementInputSerializer`'s "at least one `show_*`" validation, `DashboardElementConfigDialog`'s toggle list, and `DashboardElementCard`'s stat row reusing the detail page's existing `statTimeInRange` label) | `feature/dashboard-elements` | Implemented, manually verified end-to-end via browser (seeded a 4.0-6.5 threshold on the blood-sugar metric type with 6 entries spanning in- and out-of-range values; confirmed via direct API checks that both `/aggregate/` and `/api/dashboard-elements/` return the correct `threshold` object and `time_in_range_percent` matching 5/6 in-range = 83.3%; enabled chart + time-in-range on the dashboard-element config dialog, saved, and confirmed the dashboard block renders the time-in-range stat; no console errors from `createPriceLine`); backend: 198/198 tests passing incl. 5 new (`test_time_in_range_only_present_when_show_time_in_range_true`, `test_time_in_range_is_null_without_a_configured_threshold`, `test_chart_includes_threshold_for_bound_lines`, `test_saving_show_time_in_range_only_is_accepted` in `test_dashboard_elements.py`, plus a `threshold`-field assertion in `test_aggregate_api.py`), `ruff check .` clean on every file this pass touched; frontend: `eslint`/`tsc` clean |
 
 `MetricEntry` and `MetricThreshold` are **ownership-based**, not admin-gated: any authenticated
 user creates/edits/deletes their own entries and thresholds; only `MetricType` definitions and

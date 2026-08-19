@@ -11,9 +11,10 @@ export interface RangePreset {
 export const DEFAULT_RANGE_KEY = "30d";
 
 /**
- * Preset ranges only — no raw bucket-unit/count controls. Bucket granularity
- * is picked per range so the chart stays readable (e.g. a 3-year range in
- * daily buckets would be ~1000 candles), not exposed as a separate choice.
+ * Preset ranges only — no raw timeframe-unit/count controls exposed
+ * separately. `timeframeUnit` is only used to decide whether the chart's
+ * x-axis shows a time-of-day (hour/minute ranges) or just a date — the
+ * chart itself always plots every raw point in the range, never bucketed.
  * Shared by the metric detail page and the dashboard-element config picker so both
  * pickers stay in sync.
  */

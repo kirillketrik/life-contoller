@@ -249,6 +249,38 @@ class TestBulkImportPreview:
         assert item["status"] == "new"
         assert item["recorded_at"] is not None
 
+    def test_date_only_format_uses_current_time_not_midnight(
+        self, authenticated_client, number_metric_type
+    ):
+        """A `date_format` with no time directive must not silently backdate
+        every imported entry to 00:00 — it should use the current time of
+        day instead, same as a row with no `{date}` token at all."""
+        response = authenticated_client.post(
+            _preview_url(number_metric_type),
+            _base_payload([{"value": "70.5", "date": "01.01.2026"}]),
+            format="json",
+        )
+        [item] = response.data["items"]
+        recorded_at = timezone.datetime.fromisoformat(item["recorded_at"])
+        assert recorded_at.date() == timezone.datetime(2026, 1, 1).date()
+        assert recorded_at.time() != timezone.datetime.min.time()
+
+    def test_date_format_with_time_directive_preserves_parsed_time(
+        self, authenticated_client, number_metric_type
+    ):
+        response = authenticated_client.post(
+            _preview_url(number_metric_type),
+            _base_payload(
+                [{"value": "70.5", "date": "01.01.2026 14:30"}],
+                date_format="%d.%m.%Y %H:%M",
+            ),
+            format="json",
+        )
+        [item] = response.data["items"]
+        recorded_at = timezone.datetime.fromisoformat(item["recorded_at"])
+        assert recorded_at.hour == 14
+        assert recorded_at.minute == 30
+
 
 class TestBulkImportCreate:
     def test_anonymous_cannot_import(self, api_client, number_metric_type):

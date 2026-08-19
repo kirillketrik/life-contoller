@@ -18,7 +18,8 @@ than the rest of the dashboard.
   needed, just a new `<KpiCard .../>` call.
 - **A time series** (has a real timeline on the x-axis — activity over months/days/hours): use
   **Lightweight Charts**. Follow `components/dashboard/monthly-trend-chart.tsx` (Area series) or
-  `components/metrics/metric-chart.tsx` (Candlestick/Line) as the template — same
+  `components/metrics/metric-chart.tsx` (Line — every raw point, never bucketed/candlestick) as
+  the template — same
   `CHART_COLORS`/`ColorType.Solid` theming pattern, same `useTheme()`-driven light/dark handling,
   same cleanup (`return () => chart.remove()`).
 - **A categorical breakdown** (label → count/value, no time axis — "records by X"): use

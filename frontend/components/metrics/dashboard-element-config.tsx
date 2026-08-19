@@ -75,6 +75,7 @@ export function DashboardElementConfigDialog({
   const [showMax, setShowMax] = useState(config?.show_max ?? false);
   const [showMin, setShowMin] = useState(config?.show_min ?? false);
   const [showAvg, setShowAvg] = useState(config?.show_avg ?? false);
+  const [showTimeInRange, setShowTimeInRange] = useState(config?.show_time_in_range ?? false);
   const [timeframe, setTimeframe] = useState<string>(config?.timeframe ?? "30d");
   const [customStart, setCustomStart] = useState(config?.custom_range_start ?? "");
   const [customEnd, setCustomEnd] = useState(config?.custom_range_end ?? "");
@@ -86,6 +87,7 @@ export function DashboardElementConfigDialog({
       setShowMax(config?.show_max ?? false);
       setShowMin(config?.show_min ?? false);
       setShowAvg(config?.show_avg ?? false);
+      setShowTimeInRange(config?.show_time_in_range ?? false);
       setTimeframe(config?.timeframe ?? "30d");
       setCustomStart(config?.custom_range_start ?? "");
       setCustomEnd(config?.custom_range_end ?? "");
@@ -125,6 +127,7 @@ export function DashboardElementConfigDialog({
       show_max: showMax,
       show_min: showMin,
       show_avg: showAvg,
+      show_time_in_range: showTimeInRange,
       timeframe,
       custom_range_start: timeframe === "custom" && customStart ? customStart : null,
       custom_range_end: timeframe === "custom" && customEnd ? customEnd : null,
@@ -163,6 +166,12 @@ export function DashboardElementConfigDialog({
             <ElementToggle id="de-max" label={t("elementMax")} checked={showMax} onCheckedChange={setShowMax} />
             <ElementToggle id="de-min" label={t("elementMin")} checked={showMin} onCheckedChange={setShowMin} />
             <ElementToggle id="de-avg" label={t("elementAvg")} checked={showAvg} onCheckedChange={setShowAvg} />
+            <ElementToggle
+              id="de-time-in-range"
+              label={t("elementTimeInRange")}
+              checked={showTimeInRange}
+              onCheckedChange={setShowTimeInRange}
+            />
 
             <div className="space-y-2">
               <Label htmlFor="de-timeframe">{t("timeframeLabel")}</Label>

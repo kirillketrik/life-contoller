@@ -16,10 +16,10 @@ from django.utils import timezone
 
 from .aggregation import (
     DataPoint,
-    bucketize,
     period_percent_changes,
     resolve_named_range,
     summarize,
+    time_in_range_percent,
 )
 from .formula_engine import computed_series, evaluate_formula
 from .models import (
@@ -161,32 +161,35 @@ def dashboard_element_stats(
     show_max: bool,
     show_min: bool,
     show_avg: bool,
+    show_time_in_range: bool,
     timeframe: str,
     custom_start=None,
     custom_end=None,
     at: datetime,
 ) -> dict:
     """Resolves one `DashboardElement`-shaped config into its displayed
-    values: `current` (always latest, unfiltered) and/or chart buckets plus
-    max/min/avg over the same resolved timeframe range — the same range
-    feeds both, per the model's contract. Shared by the batched
-    `/api/dashboard-elements/` endpoint (looped, one call per element) and
-    the per-metric-type write action, so there's exactly one place this
-    resolution logic lives.
+    values: `current` (always latest, unfiltered) and/or the chart's raw
+    point series plus max/min/avg/time-in-range over the same resolved
+    timeframe range — the same range feeds all of them, per the model's
+    contract. Shared by the batched `/api/dashboard-elements/` endpoint
+    (looped, one call per element) and the per-metric-type write action, so
+    there's exactly one place this resolution logic lives.
     """
     result: dict = {
         "current": None,
         "max": None,
         "min": None,
         "avg": None,
-        "buckets": [],
+        "time_in_range_percent": None,
+        "points": [],
         "timeframe_unit": None,
+        "threshold": None,
     }
 
     if show_current:
         result["current"] = current_value_for_metric_type(metric_type=metric_type, user=user, at=at)
 
-    if show_chart or show_max or show_min or show_avg:
+    if show_chart or show_max or show_min or show_avg or show_time_in_range:
         range_start, range_end, bucket = resolve_named_range(
             timeframe, at=at, custom_start=custom_start, custom_end=custom_end
         )
@@ -194,17 +197,9 @@ def dashboard_element_stats(
             metric_type=metric_type, user=user, range_start=range_start, range_end=range_end
         )
         if show_chart:
-            buckets = bucketize(points, bucket, range_start)
-            result["buckets"] = [
-                {
-                    "bucket_start": b.bucket_start.isoformat(),
-                    "open": b.open,
-                    "high": b.high,
-                    "low": b.low,
-                    "close": b.close,
-                    "count": b.count,
-                }
-                for b in buckets
+            result["points"] = [
+                {"timestamp": p.recorded_at.isoformat(), "value": p.value}
+                for p in sorted(points, key=lambda p: p.recorded_at)
             ]
             result["timeframe_unit"] = bucket.unit.value
         if show_max or show_min or show_avg:
@@ -212,6 +207,23 @@ def dashboard_element_stats(
             result["max"] = summary.max
             result["min"] = summary.min
             result["avg"] = summary.avg
+        # The threshold also feeds the chart's red bound lines, so it's
+        # fetched whenever either show_chart or show_time_in_range needs it
+        # — one query, two consumers, same "resolve once" rule as everything
+        # else here.
+        if show_chart or show_time_in_range:
+            threshold = metric_threshold_get_for_user(user=user, metric_type_id=metric_type.id)
+            if threshold is not None:
+                result["threshold"] = {
+                    "lower_bound": threshold.lower_bound,
+                    "upper_bound": threshold.upper_bound,
+                }
+                if show_time_in_range:
+                    result["time_in_range_percent"] = time_in_range_percent(
+                        points,
+                        lower_bound=threshold.lower_bound,
+                        upper_bound=threshold.upper_bound,
+                    )
 
     result["period_changes"] = period_changes_for_metric_type(
         metric_type=metric_type, user=user, at=at
@@ -236,6 +248,7 @@ def _dashboard_element_dict(element: DashboardElement, stats: dict) -> dict:
         "show_max": element.show_max,
         "show_min": element.show_min,
         "show_avg": element.show_avg,
+        "show_time_in_range": element.show_time_in_range,
         "timeframe": element.timeframe,
         "custom_range_start": element.custom_range_start,
         "custom_range_end": element.custom_range_end,
@@ -252,6 +265,7 @@ def dashboard_element_data(*, element: DashboardElement, at: datetime) -> dict:
         show_max=element.show_max,
         show_min=element.show_min,
         show_avg=element.show_avg,
+        show_time_in_range=element.show_time_in_range,
         timeframe=element.timeframe,
         custom_start=element.custom_range_start,
         custom_end=element.custom_range_end,

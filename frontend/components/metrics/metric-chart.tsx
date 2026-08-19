@@ -1,10 +1,10 @@
 "use client";
 
 import {
-  CandlestickSeries,
   ColorType,
   type IChartApi,
   LineSeries,
+  LineStyle,
   createChart,
   type UTCTimestamp,
 } from "lightweight-charts";
@@ -12,7 +12,7 @@ import { useTranslations } from "next-intl";
 import { useTheme } from "next-themes";
 import { useEffect, useRef } from "react";
 
-import type { OHLCBucket, TimeframeUnit } from "@/lib/types";
+import type { MetricDataPoint, ThresholdBounds, TimeframeUnit } from "@/lib/types";
 
 const CHART_COLORS = {
   light: {
@@ -20,18 +20,16 @@ const CHART_COLORS = {
     text: "#0f172a",
     grid: "#e2e8f0",
     border: "#cbd5e1",
-    up: "#16a34a",
-    down: "#dc2626",
     line: "#2563eb",
+    threshold: "#dc2626",
   },
   dark: {
     background: "#0a0a0a",
     text: "#e4e4e7",
     grid: "#27272a",
     border: "#3f3f46",
-    up: "#22c55e",
-    down: "#ef4444",
     line: "#60a5fa",
+    threshold: "#f87171",
   },
 };
 
@@ -39,26 +37,17 @@ function toUnixSeconds(iso: string): UTCTimestamp {
   return Math.floor(new Date(iso).getTime() / 1000) as UTCTimestamp;
 }
 
-/** Candlestick if a meaningful share of buckets actually have spread
- * (high !== low, i.e. more than one distinct reading in the bucket);
- * otherwise the data is sparse (roughly one point per bucket, e.g. a daily
- * weight log) and a line reads far more cleanly than flat-bodied candles.
- *
- * Only applies at day/hour/minute granularity — week/month/year buckets
- * aggregate many readings each almost by definition (that's the whole point
- * of a long-range overview), so the spread heuristic would trigger
- * candlesticks on every long-range chart regardless of data shape. Those
- * coarse buckets always render as a line — same as the dashboard's own
- * 12-month trend chart. */
-function shouldRenderCandlesticks(buckets: OHLCBucket[], timeframeUnit: TimeframeUnit): boolean {
-  if (buckets.length === 0) return false;
-  if (timeframeUnit === "week" || timeframeUnit === "month" || timeframeUnit === "year") return false;
-  const bucketsWithSpread = buckets.filter((bucket) => bucket.high !== bucket.low).length;
-  return bucketsWithSpread / buckets.length > 0.2;
-}
-
-export function MetricChart({ buckets, timeframeUnit }: { buckets: OHLCBucket[]; timeframeUnit: TimeframeUnit }) {
+export function MetricChart({
+  points,
+  timeframeUnit,
+  threshold,
+}: {
+  points: MetricDataPoint[];
+  timeframeUnit: TimeframeUnit;
+  threshold?: ThresholdBounds | null;
+}) {
   const t = useTranslations("metricChart");
+  const tThreshold = useTranslations("threshold");
   const containerRef = useRef<HTMLDivElement>(null);
   const { resolvedTheme } = useTheme();
 
@@ -84,41 +73,51 @@ export function MetricChart({ buckets, timeframeUnit }: { buckets: OHLCBucket[];
       autoSize: true,
     });
 
-    const sortedBuckets = [...buckets].sort((a, b) => a.bucket_start.localeCompare(b.bucket_start));
+    const sortedPoints = [...points].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    // lightweight-charts requires strictly increasing, unique per-second
+    // timestamps — two entries logged within the same second collapse to
+    // one, keeping the later value (same "last write wins" rule as an OHLC
+    // bucket's `close`).
+    const byTime = new Map<number, number>();
+    for (const point of sortedPoints) {
+      byTime.set(toUnixSeconds(point.timestamp), point.value);
+    }
 
-    if (shouldRenderCandlesticks(sortedBuckets, timeframeUnit)) {
-      const series = chart.addSeries(CandlestickSeries, {
-        upColor: colors.up,
-        downColor: colors.down,
-        borderVisible: false,
-        wickUpColor: colors.up,
-        wickDownColor: colors.down,
+    const series = chart.addSeries(LineSeries, { color: colors.line, lineWidth: 2 });
+    series.setData(
+      [...byTime.entries()].map(([time, value]) => ({ time: time as UTCTimestamp, value })),
+    );
+
+    // The threshold's configured range, drawn as red bound lines on top of
+    // the series — not part of the data, so a plain price line rather than
+    // a second series.
+    if (threshold?.lower_bound != null) {
+      series.createPriceLine({
+        price: threshold.lower_bound,
+        color: colors.threshold,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: tThreshold("lowerBound"),
       });
-      series.setData(
-        sortedBuckets.map((bucket) => ({
-          time: toUnixSeconds(bucket.bucket_start),
-          open: bucket.open,
-          high: bucket.high,
-          low: bucket.low,
-          close: bucket.close,
-        })),
-      );
-    } else {
-      const series = chart.addSeries(LineSeries, { color: colors.line, lineWidth: 2 });
-      series.setData(
-        sortedBuckets.map((bucket) => ({
-          time: toUnixSeconds(bucket.bucket_start),
-          value: bucket.close,
-        })),
-      );
+    }
+    if (threshold?.upper_bound != null) {
+      series.createPriceLine({
+        price: threshold.upper_bound,
+        color: colors.threshold,
+        lineWidth: 1,
+        lineStyle: LineStyle.Dashed,
+        axisLabelVisible: true,
+        title: tThreshold("upperBound"),
+      });
     }
 
     chart.timeScale().fitContent();
 
     return () => chart.remove();
-  }, [buckets, timeframeUnit, resolvedTheme]);
+  }, [points, timeframeUnit, resolvedTheme, threshold, tThreshold]);
 
-  if (buckets.length === 0) {
+  if (points.length === 0) {
     return (
       <div className="flex h-80 w-full items-center justify-center text-sm text-muted-foreground">
         {t("noData")}

@@ -110,15 +110,11 @@ export type Paginated<T> = { count: number; next: string | null; previous: strin
 export const timeframeUnitSchema = z.enum(["minute", "hour", "day", "week", "month", "year"]);
 export type TimeframeUnit = z.infer<typeof timeframeUnitSchema>;
 
-export const ohlcBucketSchema = z.object({
-  bucket_start: z.string(),
-  open: z.number(),
-  high: z.number(),
-  low: z.number(),
-  close: z.number(),
-  count: z.number(),
+export const metricDataPointSchema = z.object({
+  timestamp: z.string(),
+  value: z.number(),
 });
-export type OHLCBucket = z.infer<typeof ohlcBucketSchema>;
+export type MetricDataPoint = z.infer<typeof metricDataPointSchema>;
 
 export const rangeSummarySchema = z.object({
   min: z.number().nullable(),
@@ -141,6 +137,16 @@ export const periodChangesSchema = z.object({
 });
 export type PeriodChanges = z.infer<typeof periodChangesSchema>;
 
+/** A metric's configured "healthy range" bounds, as returned alongside a
+ * chart's point series so the chart can draw them as bound lines without a
+ * second request — either bound may be null independently, same as
+ * `MetricThreshold` itself. */
+export const thresholdBoundsSchema = z.object({
+  lower_bound: z.number().nullable(),
+  upper_bound: z.number().nullable(),
+});
+export type ThresholdBounds = z.infer<typeof thresholdBoundsSchema>;
+
 export const aggregateResponseSchema = z.object({
   metric_type: z.number(),
   range_start: z.string(),
@@ -148,9 +154,10 @@ export const aggregateResponseSchema = z.object({
   timeframe_unit: timeframeUnitSchema,
   timeframe_count: z.number(),
   current: z.number().nullable(),
-  buckets: z.array(ohlcBucketSchema),
+  points: z.array(metricDataPointSchema),
   summary: rangeSummarySchema,
   time_in_range_percent: z.number().nullable(),
+  threshold: thresholdBoundsSchema.nullable(),
   period_changes: periodChangesSchema,
 });
 export type AggregateResponse = z.infer<typeof aggregateResponseSchema>;
@@ -304,6 +311,7 @@ export const dashboardElementSchema = z.object({
   show_max: z.boolean(),
   show_min: z.boolean(),
   show_avg: z.boolean(),
+  show_time_in_range: z.boolean(),
   timeframe: dashboardElementTimeframeSchema,
   custom_range_start: z.string().nullable(),
   custom_range_end: z.string().nullable(),
@@ -311,8 +319,10 @@ export const dashboardElementSchema = z.object({
   max: z.number().nullable(),
   min: z.number().nullable(),
   avg: z.number().nullable(),
-  buckets: z.array(ohlcBucketSchema),
+  time_in_range_percent: z.number().nullable(),
+  points: z.array(metricDataPointSchema),
   timeframe_unit: timeframeUnitSchema.nullable(),
+  threshold: thresholdBoundsSchema.nullable(),
   period_changes: periodChangesSchema,
 });
 export type DashboardElement = z.infer<typeof dashboardElementSchema>;
@@ -326,12 +336,19 @@ export const dashboardElementInputSchema = z
     show_max: z.boolean(),
     show_min: z.boolean(),
     show_avg: z.boolean(),
+    show_time_in_range: z.boolean(),
     timeframe: dashboardElementTimeframeSchema,
     custom_range_start: z.string().nullable(),
     custom_range_end: z.string().nullable(),
   })
   .refine(
-    (data) => data.show_chart || data.show_current || data.show_max || data.show_min || data.show_avg,
+    (data) =>
+      data.show_chart ||
+      data.show_current ||
+      data.show_max ||
+      data.show_min ||
+      data.show_avg ||
+      data.show_time_in_range,
     { message: "Enable at least one element", path: ["show_chart"] },
   )
   .refine(

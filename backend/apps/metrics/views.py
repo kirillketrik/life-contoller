@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import formula_engine, selectors, services
-from .aggregation import Timeframe, TimeframeUnit, bucketize, summarize, time_in_range_percent
+from .aggregation import summarize, time_in_range_percent
 from .formula_engine.interpreter import evaluate_node
 from .formula_engine.resolvers import AsOfResolver
 from .models import (
@@ -196,9 +196,9 @@ class MetricTypeViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["get"])
     def aggregate(self, request, pk=None):
-        """OHLC-bucketed series + summary + time-in-range for this metric
-        type, for the current user, over a timeframe. Works the same for
-        computed metric types (evaluated on the fly) as for regular ones."""
+        """Raw point series + summary + time-in-range for this metric type,
+        for the current user, over a timeframe. Works the same for computed
+        metric types (evaluated on the fly) as for regular ones."""
         metric_type = selectors.metric_type_get(metric_type_id=pk)
         if metric_type is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
@@ -223,10 +223,6 @@ class MetricTypeViewSet(viewsets.ModelViewSet):
             range_start=range_start,
             range_end=range_end,
         )
-        timeframe = Timeframe(
-            unit=TimeframeUnit(data["timeframe_unit"]), count=data["timeframe_count"]
-        )
-        buckets = bucketize(points, timeframe, range_start)
         summary = summarize(points)
 
         threshold = selectors.metric_threshold_get_for_user(
@@ -253,19 +249,12 @@ class MetricTypeViewSet(viewsets.ModelViewSet):
                 "metric_type": metric_type.id,
                 "range_start": range_start.isoformat(),
                 "range_end": range_end.isoformat(),
-                "timeframe_unit": timeframe.unit.value,
-                "timeframe_count": timeframe.count,
+                "timeframe_unit": data["timeframe_unit"],
+                "timeframe_count": data["timeframe_count"],
                 "current": current_value,
-                "buckets": [
-                    {
-                        "bucket_start": bucket.bucket_start.isoformat(),
-                        "open": bucket.open,
-                        "high": bucket.high,
-                        "low": bucket.low,
-                        "close": bucket.close,
-                        "count": bucket.count,
-                    }
-                    for bucket in buckets
+                "points": [
+                    {"timestamp": point.recorded_at.isoformat(), "value": point.value}
+                    for point in sorted(points, key=lambda p: p.recorded_at)
                 ],
                 "summary": {
                     "min": summary.min,
@@ -274,6 +263,11 @@ class MetricTypeViewSet(viewsets.ModelViewSet):
                     "count": summary.count,
                 },
                 "time_in_range_percent": time_in_range,
+                "threshold": (
+                    {"lower_bound": threshold.lower_bound, "upper_bound": threshold.upper_bound}
+                    if threshold is not None
+                    else None
+                ),
                 "period_changes": period_changes,
             }
         )
