@@ -3,18 +3,21 @@
 import { useQuery } from "@tanstack/react-query";
 import { Pencil } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { use, useEffect } from "react";
+import { use, useEffect, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
 import { DeleteMetricEntryButton } from "@/components/metrics/delete-metric-entry-button";
 import { MetricDashboard } from "@/components/metrics/metric-dashboard";
 import { MetricEntryDialog } from "@/components/metrics/metric-entry-dialog";
+import { PeriodChangeBadges } from "@/components/metrics/period-change-badges";
 import { ThresholdConfigDialog, useMetricThreshold } from "@/components/metrics/threshold-config";
+import { useMetricAggregate } from "@/components/metrics/use-metric-aggregate";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useRouter } from "@/i18n/navigation";
 import { metricEntries, metricTypes } from "@/lib/api";
+import { DEFAULT_RANGE_KEY } from "@/lib/metric-range-presets";
 import { metricEntriesQueryKey, metricTypeQueryKey } from "@/lib/query-keys";
 import type { MetricEntry, MetricType } from "@/lib/types";
 
@@ -35,6 +38,11 @@ export default function MetricTypeDetailPage({ params }: { params: Promise<{ id:
     enabled: Boolean(user),
   });
 
+  const chartable = Boolean(
+    metricTypeQuery.data &&
+      (metricTypeQuery.data.is_computed || metricTypeQuery.data.value_type === "number"),
+  );
+
   const entriesQuery = useQuery({
     queryKey: metricEntriesQueryKey(metricTypeId),
     queryFn: () => metricEntries.list(metricTypeId),
@@ -42,6 +50,9 @@ export default function MetricTypeDetailPage({ params }: { params: Promise<{ id:
   });
 
   const threshold = useMetricThreshold(metricTypeId, Boolean(user));
+
+  const [rangeKey, setRangeKey] = useState(DEFAULT_RANGE_KEY);
+  const aggregateQuery = useMetricAggregate(metricTypeId, rangeKey, Boolean(user) && chartable);
 
   function formatValue(entry: MetricEntry, metricType: MetricType | undefined): string {
     if (metricType?.value_type === "boolean") return entry.value ? t("yes") : t("no");
@@ -63,14 +74,18 @@ export default function MetricTypeDetailPage({ params }: { params: Promise<{ id:
     return <p className="text-sm text-muted-foreground">{t("notFound")}</p>;
   }
 
-  const chartable = metricType.is_computed || metricType.value_type === "number";
   const entries = entriesQuery.data?.results ?? [];
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{metricType.name}</h1>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <h1 className="text-xl font-semibold tracking-tight">{metricType.name}</h1>
+            {chartable && aggregateQuery.data && (
+              <PeriodChangeBadges changes={aggregateQuery.data.period_changes} />
+            )}
+          </div>
           <p className="text-sm text-muted-foreground">
             {metricType.value_type}
             {metricType.unit ? ` · ${metricType.unit}` : ""}
@@ -88,7 +103,15 @@ export default function MetricTypeDetailPage({ params }: { params: Promise<{ id:
         </div>
       </div>
 
-      {chartable && <MetricDashboard metricType={metricType} />}
+      {chartable && (
+        <MetricDashboard
+          metricType={metricType}
+          rangeKey={rangeKey}
+          onRangeChange={setRangeKey}
+          data={aggregateQuery.data}
+          isLoading={aggregateQuery.isLoading}
+        />
+      )}
 
       {metricType.is_computed ? null : entriesQuery.isLoading ? (
         <Skeleton className="h-64" />

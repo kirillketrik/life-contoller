@@ -128,6 +128,19 @@ export const rangeSummarySchema = z.object({
 });
 export type RangeSummary = z.infer<typeof rangeSummarySchema>;
 
+/** The 24h/7d/30d/3m/1y KPI badges shown next to a metric's name — always
+ * "as of now", independent of whatever display timeframe a chart is
+ * currently showing. `null` per period when there's no data far enough
+ * back to compare against. */
+export const periodChangesSchema = z.object({
+  "24h": z.number().nullable(),
+  "7d": z.number().nullable(),
+  "30d": z.number().nullable(),
+  "3m": z.number().nullable(),
+  "1y": z.number().nullable(),
+});
+export type PeriodChanges = z.infer<typeof periodChangesSchema>;
+
 export const aggregateResponseSchema = z.object({
   metric_type: z.number(),
   range_start: z.string(),
@@ -137,6 +150,7 @@ export const aggregateResponseSchema = z.object({
   buckets: z.array(ohlcBucketSchema),
   summary: rangeSummarySchema,
   time_in_range_percent: z.number().nullable(),
+  period_changes: periodChangesSchema,
 });
 export type AggregateResponse = z.infer<typeof aggregateResponseSchema>;
 
@@ -276,6 +290,7 @@ export const favoriteMetricSchema = z.object({
   timeframe_unit: timeframeUnitSchema,
   buckets: z.array(ohlcBucketSchema),
   summary: rangeSummarySchema,
+  period_changes: periodChangesSchema,
 });
 export type FavoriteMetric = z.infer<typeof favoriteMetricSchema>;
 

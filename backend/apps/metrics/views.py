@@ -238,6 +238,10 @@ class MetricTypeViewSet(viewsets.ModelViewSet):
                 points, lower_bound=threshold.lower_bound, upper_bound=threshold.upper_bound
             )
 
+        period_changes = selectors.period_changes_for_metric_type(
+            metric_type=metric_type, user=request.user, at=range_end
+        )
+
         return Response(
             {
                 "metric_type": metric_type.id,
@@ -263,6 +267,7 @@ class MetricTypeViewSet(viewsets.ModelViewSet):
                     "count": summary.count,
                 },
                 "time_in_range_percent": time_in_range,
+                "period_changes": period_changes,
             }
         )
 
