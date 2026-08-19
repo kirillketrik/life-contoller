@@ -5,6 +5,7 @@ from rest_framework import serializers
 from . import formula_engine, services
 from .aggregation import TimeframeUnit
 from .models import (
+    DashboardTimeframe,
     FormulaDefinition,
     MetricEntry,
     MetricImportSettings,
@@ -251,10 +252,59 @@ class FormulaPreviewSerializer(serializers.Serializer):
     computed_metric_type = serializers.IntegerField(required=False, allow_null=True)
 
 
-class FavoriteReorderSerializer(serializers.Serializer):
-    """Validates the body for `MetricTypeViewSet.reorder_favorites` — an
+class DashboardElementInputSerializer(serializers.Serializer):
+    """Validates the body for `MetricTypeViewSet.dashboard_element`'s
+    POST/PATCH — the write shape for a user's per-metric-type dashboard
+    configuration. Removal is the separate DELETE method on the same action,
+    not an implicit effect of saving with every flag off — so this always
+    requires at least one `show_*` flag, same "at least one" rule as
+    `MetricThresholdSerializer`'s bounds check."""
+
+    show_chart = serializers.BooleanField(default=False)
+    show_current = serializers.BooleanField(default=False)
+    show_max = serializers.BooleanField(default=False)
+    show_min = serializers.BooleanField(default=False)
+    show_avg = serializers.BooleanField(default=False)
+    timeframe = serializers.ChoiceField(
+        choices=DashboardTimeframe.choices, default=DashboardTimeframe.MONTH
+    )
+    custom_range_start = serializers.DateField(required=False, allow_null=True, default=None)
+    custom_range_end = serializers.DateField(required=False, allow_null=True, default=None)
+
+    def validate(self, attrs):
+        if not any(
+            [
+                attrs["show_chart"],
+                attrs["show_current"],
+                attrs["show_max"],
+                attrs["show_min"],
+                attrs["show_avg"],
+            ]
+        ):
+            raise serializers.ValidationError(
+                "Enable at least one element (chart, current, max, min, or average) — "
+                "to remove this metric from the dashboard entirely, use DELETE instead."
+            )
+        if attrs["timeframe"] == DashboardTimeframe.CUSTOM:
+            if attrs["custom_range_start"] is None or attrs["custom_range_end"] is None:
+                raise serializers.ValidationError(
+                    "A custom timeframe needs both custom_range_start and custom_range_end."
+                )
+            if attrs["custom_range_start"] > attrs["custom_range_end"]:
+                raise serializers.ValidationError(
+                    "custom_range_start must not be after custom_range_end."
+                )
+        else:
+            attrs["custom_range_start"] = None
+            attrs["custom_range_end"] = None
+        return attrs
+
+
+class DashboardElementReorderSerializer(serializers.Serializer):
+    """Validates the body for the dashboard-elements reorder endpoint — an
     ordered list of metric type ids, which must exactly match the requesting
-    user's current favorites (checked in the view, against the DB)."""
+    user's current dashboard elements (checked in the view, against the DB).
+    """
 
     metric_type_ids = serializers.ListField(child=serializers.IntegerField(), allow_empty=False)
 

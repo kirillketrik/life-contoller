@@ -11,7 +11,7 @@ from .aggregation import Timeframe, TimeframeUnit, bucketize, summarize, time_in
 from .formula_engine.interpreter import evaluate_node
 from .formula_engine.resolvers import AsOfResolver
 from .models import (
-    FavoriteMetric,
+    DashboardElement,
     FormulaDefinition,
     MetricEntry,
     MetricImportSettings,
@@ -28,7 +28,8 @@ from .permissions import (
 from .serializers import (
     AggregateQuerySerializer,
     BulkImportRequestSerializer,
-    FavoriteReorderSerializer,
+    DashboardElementInputSerializer,
+    DashboardElementReorderSerializer,
     FormulaDefinitionSerializer,
     FormulaPreviewSerializer,
     MetricEntrySerializer,
@@ -37,7 +38,7 @@ from .serializers import (
     MetricTypeSerializer,
 )
 
-FAVORITE_ACTIONS = {"favorite", "favorites", "reorder_favorites"}
+DASHBOARD_ELEMENT_ACTIONS = {"dashboard_element"}
 IMPORT_ACTIONS = {"import_settings", "import_preview", "bulk_import"}
 
 DEFAULT_RELATIVE_DAYS = 30
@@ -52,56 +53,55 @@ class MetricTypeViewSet(viewsets.ModelViewSet):
         return selectors.metric_type_list()
 
     def get_permissions(self):
-        """Favoriting and bulk-importing entries are personal actions any
-        authenticated user takes on their own data, not a role-gated edit of
-        the shared MetricType catalog — same ownership-vs-role-gated
-        distinction as MetricEntry/MetricThreshold (see
-        apps.metrics.permissions), just exposed as actions on this viewset
-        instead of a separate one. Ownership itself is enforced by scoping
-        every query to `request.user` in the action bodies below, not by an
-        object-level permission check."""
-        if self.action in FAVORITE_ACTIONS | IMPORT_ACTIONS:
+        """Configuring a metric's dashboard elements and bulk-importing
+        entries are personal actions any authenticated user takes on their
+        own data, not a role-gated edit of the shared MetricType catalog —
+        same ownership-vs-role-gated distinction as MetricEntry/
+        MetricThreshold (see apps.metrics.permissions), just exposed as
+        actions on this viewset instead of a separate one. Ownership itself
+        is enforced by scoping every query to `request.user` in the action
+        bodies below, not by an object-level permission check."""
+        if self.action in DASHBOARD_ELEMENT_ACTIONS | IMPORT_ACTIONS:
             return [permissions.IsAuthenticated()]
         return super().get_permissions()
 
-    @action(detail=True, methods=["post", "delete"], url_path="favorite")
-    def favorite(self, request, pk=None):
-        """Idempotent: POST when already favorited, or DELETE when not, is a
-        no-op rather than an error."""
+    @action(detail=True, methods=["post", "patch", "delete"], url_path="dashboard-element")
+    def dashboard_element(self, request, pk=None):
+        """The requesting user's dashboard configuration for this metric
+        type: which elements (chart/current/max/min/avg) are shown and over
+        what timeframe. POST/PATCH upsert (create on first save, update on
+        every save after) and return the saved config with its resolved
+        stats attached; DELETE removes it from the dashboard entirely
+        (idempotent — a no-op, not an error, when none exists), which is the
+        only way to "turn off" every element, see
+        DashboardElementInputSerializer."""
         metric_type = selectors.metric_type_get(metric_type_id=pk)
         if metric_type is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
-        if request.method == "POST":
-            FavoriteMetric.objects.get_or_create(user=request.user, metric_type=metric_type)
-        else:
-            FavoriteMetric.objects.filter(user=request.user, metric_type=metric_type).delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
 
-    @action(detail=False, methods=["get"], url_path="favorites")
-    def favorites(self, request):
-        return Response(selectors.favorites_chart_data_for_user(user=request.user))
+        existing = selectors.dashboard_element_get_for_user(
+            user=request.user, metric_type_id=metric_type.id
+        )
+        if request.method == "DELETE":
+            if existing is not None:
+                existing.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
 
-    @action(detail=False, methods=["patch"], url_path="favorites/reorder")
-    def reorder_favorites(self, request):
-        serializer = FavoriteReorderSerializer(data=request.data)
+        serializer = DashboardElementInputSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        metric_type_ids = serializer.validated_data["metric_type_ids"]
-
-        favorites_by_type = {
-            favorite.metric_type_id: favorite
-            for favorite in selectors.favorite_metric_list_for_user(user=request.user)
-        }
-        if set(metric_type_ids) != set(favorites_by_type):
-            return Response(
-                {"detail": "metric_type_ids must match your current favorites exactly."},
-                status=status.HTTP_400_BAD_REQUEST,
+        data = serializer.validated_data
+        if existing is None:
+            instance = DashboardElement.objects.create(
+                user=request.user, metric_type=metric_type, **data
             )
-        for index, metric_type_id in enumerate(metric_type_ids):
-            favorite = favorites_by_type[metric_type_id]
-            if favorite.order != index:
-                favorite.order = index
-                favorite.save(update_fields=["order"])
-        return Response(selectors.favorites_chart_data_for_user(user=request.user))
+        else:
+            for field, value in data.items():
+                setattr(existing, field, value)
+            existing.save()
+            instance = existing
+        return Response(
+            selectors.dashboard_element_data(element=instance, at=timezone.now())
+        )
 
     @action(detail=True, methods=["get", "put"], url_path="import-settings")
     def import_settings(self, request, pk=None):
@@ -241,6 +241,12 @@ class MetricTypeViewSet(viewsets.ModelViewSet):
         period_changes = selectors.period_changes_for_metric_type(
             metric_type=metric_type, user=request.user, at=range_end
         )
+        # Always the single latest entry as of now — deliberately not
+        # range_end, so "current" stays correct even when the selected
+        # range's end is historical (e.g. a custom range in the past).
+        current_value = selectors.current_value_for_metric_type(
+            metric_type=metric_type, user=request.user, at=timezone.now()
+        )
 
         return Response(
             {
@@ -249,6 +255,7 @@ class MetricTypeViewSet(viewsets.ModelViewSet):
                 "range_end": range_end.isoformat(),
                 "timeframe_unit": timeframe.unit.value,
                 "timeframe_count": timeframe.count,
+                "current": current_value,
                 "buckets": [
                     {
                         "bucket_start": bucket.bucket_start.isoformat(),
@@ -339,3 +346,48 @@ class DashboardSummaryView(APIView):
 
     def get(self, request):
         return Response(selectors.dashboard_summary_for_user(user=request.user))
+
+
+class DashboardElementListView(APIView):
+    """Every configured dashboard element for the requesting user, each with
+    its resolved stats — one request for the whole dashboard, not one
+    `/aggregate/`-style request per block (same N+1 concern the old
+    favorites endpoint was built to avoid)."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response(
+            selectors.dashboard_elements_data_for_user(user=request.user, at=timezone.now())
+        )
+
+
+class DashboardElementReorderView(APIView):
+    """Persists a new `order` for an exact-match set of the user's own
+    dashboard elements — same validate-then-reassign shape as the old
+    favorites reorder endpoint it replaces."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request):
+        serializer = DashboardElementReorderSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        metric_type_ids = serializer.validated_data["metric_type_ids"]
+
+        elements_by_type = {
+            element.metric_type_id: element
+            for element in selectors.dashboard_element_list_for_user(user=request.user)
+        }
+        if set(metric_type_ids) != set(elements_by_type):
+            return Response(
+                {"detail": "metric_type_ids must match your current dashboard elements exactly."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        for index, metric_type_id in enumerate(metric_type_ids):
+            element = elements_by_type[metric_type_id]
+            if element.order != index:
+                element.order = index
+                element.save(update_fields=["order"])
+        return Response(
+            selectors.dashboard_elements_data_for_user(user=request.user, at=timezone.now())
+        )

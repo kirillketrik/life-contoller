@@ -1,7 +1,7 @@
 from django.contrib import admin
 
 from .models import (
-    FavoriteMetric,
+    DashboardElement,
     FormulaDefinition,
     MetricEntry,
     MetricImportSettings,
@@ -54,10 +54,21 @@ class MetricThresholdAdmin(admin.ModelAdmin):
     autocomplete_fields = ["metric_type", "user"]
 
 
-@admin.register(FavoriteMetric)
-class FavoriteMetricAdmin(admin.ModelAdmin):
-    list_display = ["metric_type", "user", "order", "created_at"]
-    list_filter = ["metric_type"]
+@admin.register(DashboardElement)
+class DashboardElementAdmin(admin.ModelAdmin):
+    list_display = [
+        "metric_type",
+        "user",
+        "show_chart",
+        "show_current",
+        "show_max",
+        "show_min",
+        "show_avg",
+        "timeframe",
+        "order",
+        "created_at",
+    ]
+    list_filter = ["metric_type", "timeframe"]
     search_fields = ["user__username", "metric_type__name"]
     autocomplete_fields = ["metric_type", "user"]
 

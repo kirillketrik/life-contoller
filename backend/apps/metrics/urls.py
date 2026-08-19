@@ -2,6 +2,8 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    DashboardElementListView,
+    DashboardElementReorderView,
     DashboardSummaryView,
     FormulaDefinitionViewSet,
     FormulaPreviewView,
@@ -18,6 +20,12 @@ router.register("formula-definitions", FormulaDefinitionViewSet, basename="formu
 
 urlpatterns = [
     path("dashboard-summary/", DashboardSummaryView.as_view(), name="dashboard-summary"),
+    path("dashboard-elements/", DashboardElementListView.as_view(), name="dashboard-elements"),
+    path(
+        "dashboard-elements/reorder/",
+        DashboardElementReorderView.as_view(),
+        name="dashboard-elements-reorder",
+    ),
     path("formula-definitions/preview/", FormulaPreviewView.as_view(), name="formula-preview"),
     *router.urls,
 ]

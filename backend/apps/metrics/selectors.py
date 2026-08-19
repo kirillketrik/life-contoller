@@ -16,29 +16,24 @@ from django.utils import timezone
 
 from .aggregation import (
     DataPoint,
-    RangeSummary,
-    Timeframe,
-    TimeframeUnit,
     bucketize,
     period_percent_changes,
+    resolve_named_range,
     summarize,
 )
-from .formula_engine import computed_series
+from .formula_engine import computed_series, evaluate_formula
 from .models import (
-    FavoriteMetric,
+    DashboardElement,
     FormulaDefinition,
     MetricEntry,
     MetricImportSettings,
     MetricThreshold,
     MetricType,
-    ValueType,
 )
 
 DASHBOARD_TREND_MONTHS = 12
-FAVORITE_CHART_RANGE_DAYS = 30
-FAVORITE_CHART_TIMEFRAME = Timeframe(unit=TimeframeUnit.DAY, count=1)
 
-# The KPI badges shown next to a metric's name (dashboard favorite card and
+# The KPI badges shown next to a metric's name (dashboard element block and
 # the metric detail page alike) — always "as of now", independent of
 # whatever display timeframe the chart itself is currently showing.
 PERIOD_CHANGE_SPECS: list[tuple[str, timedelta | relativedelta]] = [
@@ -71,8 +66,8 @@ def metric_entry_list_for_user(*, user, metric_type_id: int | None = None) -> Qu
     """Entries owned by `user` only — ownership-based like `MetricThreshold`,
     with no admin override. Logging entries is a personal action; an admin
     account is not entitled to see or manage another user's readings just by
-    virtue of the role, same as thresholds and favorites. Optionally narrowed
-    to a single `MetricType`."""
+    virtue of the role, same as thresholds and dashboard elements. Optionally
+    narrowed to a single `MetricType`."""
     queryset = MetricEntry.objects.select_related("metric_type", "owner").filter(owner=user)
     if metric_type_id is not None:
         queryset = queryset.filter(metric_type_id=metric_type_id)
@@ -129,77 +124,150 @@ def metric_threshold_get_for_user(*, user, metric_type_id: int) -> MetricThresho
     return MetricThreshold.objects.filter(user=user, metric_type_id=metric_type_id).first()
 
 
-def favorite_metric_list_for_user(*, user) -> QuerySet[FavoriteMetric]:
-    return FavoriteMetric.objects.filter(user=user).select_related("metric_type")
-
-
-def favorites_chart_data_for_user(*, user) -> list[dict]:
-    """Every favorited metric type for `user`, each with a pre-bucketed recent
-    series — so the dashboard's favorites section renders every card from
-    this one response instead of one `/aggregate/` request per card.
-
-    Mirrors `points_for_metric_type`/`bucketize`/`summarize` (used by the
-    `/aggregate/` action), just with a fixed recent-range window instead of a
-    caller-supplied timeframe. Non-chartable metric types (favorited is
-    normally prevented by the UI, but the API doesn't enforce it — see
-    `apps.metrics.views`) degrade to an empty series rather than erroring.
+def current_value_for_metric_type(*, metric_type: MetricType, user, at: datetime):
+    """The single latest value for `metric_type`/`user`, as of `at` —
+    deliberately *not* derived from a `points_for_metric_type` range query,
+    since "current" must stay correct even when the latest entry falls
+    outside whatever display timeframe a chart/element happens to be using.
     """
-    range_end = timezone.now()
-    range_start = range_end - timedelta(days=FAVORITE_CHART_RANGE_DAYS)
+    if metric_type.is_computed:
+        formula_definition = getattr(metric_type, "formula_definition", None)
+        if formula_definition is None:
+            return None
+        return evaluate_formula(formula_definition, user=user, at=at)
 
-    result = []
-    for favorite in favorite_metric_list_for_user(user=user):
-        metric_type = favorite.metric_type
-        chartable = metric_type.is_computed or metric_type.value_type == ValueType.NUMBER
-        if chartable:
-            points = points_for_metric_type(
-                metric_type=metric_type, user=user, range_start=range_start, range_end=range_end
-            )
-            buckets = bucketize(points, FAVORITE_CHART_TIMEFRAME, range_start)
-            summary = summarize(points)
-            period_changes = period_changes_for_metric_type(
-                metric_type=metric_type, user=user, at=range_end
-            )
-        else:
-            buckets = []
-            summary = RangeSummary(min=None, max=None, avg=None, count=0)
-            period_changes = {label: None for label, _ in PERIOD_CHANGE_SPECS}
+    entry = (
+        MetricEntry.objects.filter(metric_type=metric_type, owner=user, recorded_at__lte=at)
+        .order_by("-recorded_at")
+        .first()
+    )
+    return entry.value if entry is not None else None
 
-        # Reuse MetricTypeSerializer rather than hand-building this dict, so a
-        # field added to MetricType's API shape later (is_singleton, choices)
-        # doesn't have to be remembered here too — a prior manual dict drifted
-        # out of sync with the frontend's metricTypeSchema and silently broke
-        # every consumer of this endpoint's shared query key (favorite
-        # toggling and the dashboard favorites section alike).
-        from .serializers import MetricTypeSerializer
 
-        result.append(
-            {
-                "id": favorite.id,
-                "order": favorite.order,
-                "metric_type": MetricTypeSerializer(metric_type).data,
-                "timeframe_unit": FAVORITE_CHART_TIMEFRAME.unit.value,
-                "buckets": [
-                    {
-                        "bucket_start": bucket.bucket_start.isoformat(),
-                        "open": bucket.open,
-                        "high": bucket.high,
-                        "low": bucket.low,
-                        "close": bucket.close,
-                        "count": bucket.count,
-                    }
-                    for bucket in buckets
-                ],
-                "summary": {
-                    "min": summary.min,
-                    "max": summary.max,
-                    "avg": summary.avg,
-                    "count": summary.count,
-                },
-                "period_changes": period_changes,
-            }
+def dashboard_element_list_for_user(*, user) -> QuerySet[DashboardElement]:
+    return DashboardElement.objects.filter(user=user).select_related("metric_type")
+
+
+def dashboard_element_get_for_user(*, user, metric_type_id: int) -> DashboardElement | None:
+    return DashboardElement.objects.filter(user=user, metric_type_id=metric_type_id).first()
+
+
+def dashboard_element_stats(
+    *,
+    metric_type: MetricType,
+    user,
+    show_chart: bool,
+    show_current: bool,
+    show_max: bool,
+    show_min: bool,
+    show_avg: bool,
+    timeframe: str,
+    custom_start=None,
+    custom_end=None,
+    at: datetime,
+) -> dict:
+    """Resolves one `DashboardElement`-shaped config into its displayed
+    values: `current` (always latest, unfiltered) and/or chart buckets plus
+    max/min/avg over the same resolved timeframe range — the same range
+    feeds both, per the model's contract. Shared by the batched
+    `/api/dashboard-elements/` endpoint (looped, one call per element) and
+    the per-metric-type write action, so there's exactly one place this
+    resolution logic lives.
+    """
+    result: dict = {
+        "current": None,
+        "max": None,
+        "min": None,
+        "avg": None,
+        "buckets": [],
+        "timeframe_unit": None,
+    }
+
+    if show_current:
+        result["current"] = current_value_for_metric_type(metric_type=metric_type, user=user, at=at)
+
+    if show_chart or show_max or show_min or show_avg:
+        range_start, range_end, bucket = resolve_named_range(
+            timeframe, at=at, custom_start=custom_start, custom_end=custom_end
         )
+        points = points_for_metric_type(
+            metric_type=metric_type, user=user, range_start=range_start, range_end=range_end
+        )
+        if show_chart:
+            buckets = bucketize(points, bucket, range_start)
+            result["buckets"] = [
+                {
+                    "bucket_start": b.bucket_start.isoformat(),
+                    "open": b.open,
+                    "high": b.high,
+                    "low": b.low,
+                    "close": b.close,
+                    "count": b.count,
+                }
+                for b in buckets
+            ]
+            result["timeframe_unit"] = bucket.unit.value
+        if show_max or show_min or show_avg:
+            summary = summarize(points)
+            result["max"] = summary.max
+            result["min"] = summary.min
+            result["avg"] = summary.avg
+
+    result["period_changes"] = period_changes_for_metric_type(
+        metric_type=metric_type, user=user, at=at
+    )
     return result
+
+
+def _dashboard_element_dict(element: DashboardElement, stats: dict) -> dict:
+    # Reuse MetricTypeSerializer rather than hand-building this dict, so a
+    # field added to MetricType's API shape later doesn't have to be
+    # remembered here too — a prior manual dict drifted out of sync with the
+    # frontend's metricTypeSchema and silently broke every consumer of the
+    # old favorites endpoint's shared query key.
+    from .serializers import MetricTypeSerializer
+
+    return {
+        "id": element.id,
+        "order": element.order,
+        "metric_type": MetricTypeSerializer(element.metric_type).data,
+        "show_chart": element.show_chart,
+        "show_current": element.show_current,
+        "show_max": element.show_max,
+        "show_min": element.show_min,
+        "show_avg": element.show_avg,
+        "timeframe": element.timeframe,
+        "custom_range_start": element.custom_range_start,
+        "custom_range_end": element.custom_range_end,
+        **stats,
+    }
+
+
+def dashboard_element_data(*, element: DashboardElement, at: datetime) -> dict:
+    stats = dashboard_element_stats(
+        metric_type=element.metric_type,
+        user=element.user,
+        show_chart=element.show_chart,
+        show_current=element.show_current,
+        show_max=element.show_max,
+        show_min=element.show_min,
+        show_avg=element.show_avg,
+        timeframe=element.timeframe,
+        custom_start=element.custom_range_start,
+        custom_end=element.custom_range_end,
+        at=at,
+    )
+    return _dashboard_element_dict(element, stats)
+
+
+def dashboard_elements_data_for_user(*, user, at: datetime) -> list[dict]:
+    """Every configured dashboard element for `user`, each with its resolved
+    stats — one response for the whole dashboard, not one `/aggregate/`-style
+    request per block."""
+    return [
+        dashboard_element_data(element=element, at=at)
+        for element in dashboard_element_list_for_user(user=user)
+    ]
 
 
 def metric_import_settings_get_for_user(

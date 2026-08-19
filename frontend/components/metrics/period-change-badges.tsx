@@ -9,7 +9,7 @@ const PERIOD_ORDER: (keyof PeriodChanges)[] = ["24h", "7d", "30d", "3m", "1y"];
 
 /** The 24h/7d/30d/3m/1y % change badges shown next to a metric's name —
  * green/red per sign, "—" when there's no data far enough back to compare
- * against. Shared by the favorite chart card and the metric detail page. */
+ * against. Shared by each dashboard element block and the metric detail page. */
 export function PeriodChangeBadges({
   changes,
   className,
