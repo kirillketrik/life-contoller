@@ -14,7 +14,15 @@ from django.db.models import Count, QuerySet
 from django.db.models.functions import TruncMonth
 from django.utils import timezone
 
-from .aggregation import DataPoint, RangeSummary, Timeframe, TimeframeUnit, bucketize, summarize
+from .aggregation import (
+    DataPoint,
+    RangeSummary,
+    Timeframe,
+    TimeframeUnit,
+    bucketize,
+    period_percent_changes,
+    summarize,
+)
 from .formula_engine import computed_series
 from .models import (
     FavoriteMetric,
@@ -29,6 +37,24 @@ from .models import (
 DASHBOARD_TREND_MONTHS = 12
 FAVORITE_CHART_RANGE_DAYS = 30
 FAVORITE_CHART_TIMEFRAME = Timeframe(unit=TimeframeUnit.DAY, count=1)
+
+# The KPI badges shown next to a metric's name (dashboard favorite card and
+# the metric detail page alike) — always "as of now", independent of
+# whatever display timeframe the chart itself is currently showing.
+PERIOD_CHANGE_SPECS: list[tuple[str, timedelta | relativedelta]] = [
+    ("24h", timedelta(hours=24)),
+    ("7d", timedelta(days=7)),
+    ("30d", timedelta(days=30)),
+    ("3m", relativedelta(months=3)),
+    ("1y", relativedelta(years=1)),
+]
+# Deliberately much wider than the longest period spec above ("1y") rather
+# than matching it exactly: "value at or before the 1y-ago target" needs
+# points *older* than that target to fall back to when nothing landed
+# exactly on that day, so bounding the fetch to precisely 1 year back would
+# put the target on the query's own edge and hide any older point entirely
+# — same "100 years back" convention as the frontend's "Всё время" preset.
+PERIOD_CHANGE_LOOKBACK = relativedelta(years=100)
 
 
 def metric_type_list() -> QuerySet[MetricType]:
@@ -82,6 +108,19 @@ def points_for_metric_type(
     return [DataPoint(recorded_at=entry.recorded_at, value=entry.value) for entry in entries]
 
 
+def period_changes_for_metric_type(*, metric_type: MetricType, user, at: datetime) -> dict:
+    """% change over each of `PERIOD_CHANGE_SPECS` (24h/7d/30d/3m/1y) as of
+    `at`, for `metric_type`/`user` — the badges shown next to a metric's
+    name. Deliberately its own lookback window (up to a year back) rather
+    than reusing whatever range a chart happens to be displaying, since the
+    periods here are fixed regardless of the caller's selected timeframe."""
+    range_start = at - PERIOD_CHANGE_LOOKBACK
+    points = points_for_metric_type(
+        metric_type=metric_type, user=user, range_start=range_start, range_end=at
+    )
+    return period_percent_changes(points, at=at, periods=PERIOD_CHANGE_SPECS)
+
+
 def metric_threshold_list_for_user(*, user) -> QuerySet[MetricThreshold]:
     return MetricThreshold.objects.filter(user=user).select_related("metric_type")
 
@@ -118,9 +157,13 @@ def favorites_chart_data_for_user(*, user) -> list[dict]:
             )
             buckets = bucketize(points, FAVORITE_CHART_TIMEFRAME, range_start)
             summary = summarize(points)
+            period_changes = period_changes_for_metric_type(
+                metric_type=metric_type, user=user, at=range_end
+            )
         else:
             buckets = []
             summary = RangeSummary(min=None, max=None, avg=None, count=0)
+            period_changes = {label: None for label, _ in PERIOD_CHANGE_SPECS}
 
         # Reuse MetricTypeSerializer rather than hand-building this dict, so a
         # field added to MetricType's API shape later (is_singleton, choices)
@@ -153,6 +196,7 @@ def favorites_chart_data_for_user(*, user) -> list[dict]:
                     "avg": summary.avg,
                     "count": summary.count,
                 },
+                "period_changes": period_changes,
             }
         )
     return result

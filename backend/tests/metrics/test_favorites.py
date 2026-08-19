@@ -118,6 +118,53 @@ class TestFavoriteMetricList:
             "choices",
         }
 
+    def test_favorite_includes_period_changes(
+        self, authenticated_client, number_metric_type, regular_user
+    ):
+        baker.make(FavoriteMetric, user=regular_user, metric_type=number_metric_type)
+        baker.make(
+            "metrics.MetricEntry",
+            metric_type=number_metric_type,
+            owner=regular_user,
+            value=100,
+            recorded_at=timezone.now() - timedelta(hours=25),
+        )
+        baker.make(
+            "metrics.MetricEntry",
+            metric_type=number_metric_type,
+            owner=regular_user,
+            value=110,
+            recorded_at=timezone.now(),
+        )
+
+        response = authenticated_client.get("/api/metric-types/favorites/")
+        assert response.status_code == status.HTTP_200_OK
+        [favorite] = response.data
+        period_changes = favorite["period_changes"]
+        assert period_changes.keys() == {"24h", "7d", "30d", "3m", "1y"}
+        assert period_changes["24h"] == pytest.approx((110 - 100) / 100 * 100)
+        # the older entry is only 25h old — too recent to be "before" the
+        # 7d/30d/3m/1y lookback targets, so those have nothing to compare against
+        assert period_changes["7d"] is None
+        assert period_changes["1y"] is None
+
+    def test_non_chartable_favorite_has_null_period_changes(
+        self, authenticated_client, regular_user
+    ):
+        text_type = baker.make("metrics.MetricType", value_type="text")
+        baker.make(FavoriteMetric, user=regular_user, metric_type=text_type)
+
+        response = authenticated_client.get("/api/metric-types/favorites/")
+        assert response.status_code == status.HTTP_200_OK
+        [favorite] = response.data
+        assert favorite["period_changes"] == {
+            "24h": None,
+            "7d": None,
+            "30d": None,
+            "3m": None,
+            "1y": None,
+        }
+
     def test_favorite_of_other_users_entries_not_included(
         self, authenticated_client, number_metric_type, regular_user, other_user
     ):

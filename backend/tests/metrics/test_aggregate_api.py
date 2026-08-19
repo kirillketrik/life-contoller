@@ -1,6 +1,7 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
+from django.utils import timezone
 from model_bakery import baker
 from rest_framework import status
 
@@ -122,6 +123,66 @@ class TestAggregateEndpoint:
             {"timeframe_unit": "day", "timeframe_count": 1},
         )
         assert response.status_code == status.HTTP_400_BAD_REQUEST
+
+    def test_includes_period_changes(self, authenticated_client, number_metric_type, regular_user):
+        baker.make(
+            MetricEntry,
+            metric_type=number_metric_type,
+            owner=regular_user,
+            value=100,
+            recorded_at=dt(2026, 1, 1, 12),
+        )
+        baker.make(
+            MetricEntry,
+            metric_type=number_metric_type,
+            owner=regular_user,
+            value=120,
+            recorded_at=dt(2026, 1, 2, 12),
+        )
+        response = authenticated_client.get(
+            f"/api/metric-types/{number_metric_type.id}/aggregate/",
+            {
+                "timeframe_unit": "day",
+                "timeframe_count": 1,
+                "start": "2026-01-01T00:00:00Z",
+                "end": "2026-01-02T12:00:00Z",
+            },
+        )
+        assert response.status_code == status.HTTP_200_OK
+        period_changes = response.data["period_changes"]
+        assert period_changes.keys() == {"24h", "7d", "30d", "3m", "1y"}
+        assert period_changes["24h"] == pytest.approx((120 - 100) / 100 * 100)
+        assert period_changes["7d"] is None  # no data a week before either entry
+
+    def test_period_change_finds_data_older_than_the_period_itself(
+        self, authenticated_client, number_metric_type, regular_user
+    ):
+        """Regression test: the period-changes lookback window used to be
+        bounded to exactly the longest period spec ("1y"), so a point older
+        than that boundary (e.g. logged ~2 years ago) fell outside the fetch
+        entirely and was invisible to the "value at or before" lookup —
+        the 1y badge always showed "no data" even when an older point
+        genuinely existed to compare against."""
+        baker.make(
+            MetricEntry,
+            metric_type=number_metric_type,
+            owner=regular_user,
+            value=100,
+            recorded_at=timezone.now() - timedelta(days=800),
+        )
+        baker.make(
+            MetricEntry,
+            metric_type=number_metric_type,
+            owner=regular_user,
+            value=120,
+            recorded_at=timezone.now(),
+        )
+        response = authenticated_client.get(
+            f"/api/metric-types/{number_metric_type.id}/aggregate/",
+            {"timeframe_unit": "day", "timeframe_count": 1, "relative_days": 30},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["period_changes"]["1y"] == pytest.approx((120 - 100) / 100 * 100)
 
     def test_invalid_timeframe_unit_is_rejected(self, authenticated_client, number_metric_type):
         response = authenticated_client.get(

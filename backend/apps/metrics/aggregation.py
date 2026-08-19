@@ -163,3 +163,38 @@ def time_in_range_percent(
         and (upper_bound is None or point.value <= upper_bound)
     )
     return (in_range / len(points)) * 100
+
+
+def period_percent_changes(
+    points: list[DataPoint],
+    *,
+    at: datetime,
+    periods: list[tuple[str, timedelta | relativedelta]],
+) -> dict[str, float | None]:
+    """% change between the latest value at/before `at` and the latest value
+    at/before each `at - period` lookback, keyed by label (e.g. "24h").
+
+    `None` for a given period when either side has no data at all — most
+    commonly because the metric didn't exist that far back yet — rather than
+    guessing or substituting a default, same "never fabricate a missing
+    value" rule as the rest of this module.
+    """
+    sorted_points = sorted(points, key=lambda p: p.recorded_at)
+
+    def value_at_or_before(target: datetime) -> float | None:
+        value = None
+        for point in sorted_points:
+            if point.recorded_at > target:
+                break
+            value = point.value
+        return value
+
+    current = value_at_or_before(at)
+    changes: dict[str, float | None] = {}
+    for label, period in periods:
+        past = value_at_or_before(at - period)
+        if current is None or past is None or past == 0:
+            changes[label] = None
+        else:
+            changes[label] = (current - past) / abs(past) * 100
+    return changes
