@@ -8,7 +8,9 @@ import {
   type BulkImportRequest,
   type BulkImportResultResponse,
   bulkImportResultResponseSchema,
+  type CreateFoodItemInput,
   type CreateFormulaDefinitionInput,
+  type CreateMealEntryInput,
   type CreateMetricEntryInput,
   type CreateMetricImportSettingsInput,
   type CreateMetricThresholdInput,
@@ -20,12 +22,16 @@ import {
   dashboardElementSchema,
   type DashboardSummary,
   dashboardSummarySchema,
+  type FoodItem,
+  foodItemSchema,
   type FormulaDefinition,
   formulaDefinitionSchema,
   type FormulaNode,
   type FormulaPreviewResponse,
   formulaPreviewResponseSchema,
   type LoginInput,
+  type MealEntry,
+  mealEntrySchema,
   type MetricEntry,
   metricEntrySchema,
   type MetricImportSettings,
@@ -35,6 +41,8 @@ import {
   metricThresholdSchema,
   type MetricType,
   metricTypeSchema,
+  type NutrientType,
+  nutrientTypeSchema,
   type Paginated,
   paginatedSchema,
   type TimeframeUnit,
@@ -236,6 +244,50 @@ export const metricBulkImport = {
       method: "POST",
       body: JSON.stringify(data),
     }),
+};
+
+export const nutrientTypes = {
+  list: (): Promise<Paginated<NutrientType>> =>
+    request(paginatedSchema(nutrientTypeSchema), "/api/nutrient-types/"),
+};
+
+export const foodItems = {
+  list: (search?: string): Promise<Paginated<FoodItem>> =>
+    request(
+      paginatedSchema(foodItemSchema),
+      search ? `/api/food-items/?search=${encodeURIComponent(search)}` : "/api/food-items/",
+    ),
+  get: (id: number): Promise<FoodItem> => request(foodItemSchema, `/api/food-items/${id}/`),
+  create: (data: CreateFoodItemInput): Promise<FoodItem> =>
+    request(foodItemSchema, "/api/food-items/", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  update: (id: number, data: CreateFoodItemInput): Promise<FoodItem> =>
+    request(foodItemSchema, `/api/food-items/${id}/`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  delete: (id: number) => requestVoid(`/api/food-items/${id}/`, { method: "DELETE" }),
+};
+
+export const mealEntries = {
+  list: (date?: string): Promise<Paginated<MealEntry>> =>
+    request(
+      paginatedSchema(mealEntrySchema),
+      date ? `/api/meal-entries/?date=${date}` : "/api/meal-entries/",
+    ),
+  create: (data: CreateMealEntryInput): Promise<MealEntry> =>
+    request(mealEntrySchema, "/api/meal-entries/", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  update: (id: number, data: CreateMealEntryInput): Promise<MealEntry> =>
+    request(mealEntrySchema, `/api/meal-entries/${id}/`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  delete: (id: number) => requestVoid(`/api/meal-entries/${id}/`, { method: "DELETE" }),
 };
 
 export const formulaDefinitions = {

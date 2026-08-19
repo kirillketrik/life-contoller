@@ -438,3 +438,108 @@ export const bulkImportResultResponseSchema = z.object({
   items: z.array(bulkImportItemResultSchema),
 });
 export type BulkImportResultResponse = z.infer<typeof bulkImportResultResponseSchema>;
+
+// --- Nutrition module ---
+
+export const nutrientCategorySchema = z.enum(["macro", "micro"]);
+export type NutrientCategory = z.infer<typeof nutrientCategorySchema>;
+
+export const nutrientTypeSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  unit: z.string(),
+  category: nutrientCategorySchema,
+  is_system: z.boolean(),
+  created_at: z.string(),
+});
+export type NutrientType = z.infer<typeof nutrientTypeSchema>;
+
+export const foodSourceSchema = z.enum(["own", "external"]);
+export type FoodSource = z.infer<typeof foodSourceSchema>;
+
+/** Decimal fields come back from DRF as numeric strings — parsed to numbers
+ * here so the frontend never has to think about which fields are Decimals
+ * on the Django side. */
+const decimalStringSchema = z.union([z.string(), z.number()]).pipe(z.coerce.number());
+
+export const foodNutrientValueSchema = z.object({
+  id: z.number(),
+  nutrient_type: z.number(),
+  nutrient_type_name: z.string(),
+  nutrient_type_unit: z.string(),
+  amount_per_100g: decimalStringSchema,
+});
+export type FoodNutrientValue = z.infer<typeof foodNutrientValueSchema>;
+
+export const foodItemSchema = z.object({
+  id: z.number(),
+  owner: z.number(),
+  name: z.string(),
+  brand: z.string(),
+  source: foodSourceSchema,
+  external_id: z.string(),
+  calories_per_100g: decimalStringSchema,
+  protein_per_100g: decimalStringSchema,
+  fat_per_100g: decimalStringSchema,
+  carbs_per_100g: decimalStringSchema,
+  is_verified: z.boolean(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  nutrient_values: z.array(foodNutrientValueSchema),
+});
+export type FoodItem = z.infer<typeof foodItemSchema>;
+
+export const createFoodNutrientValueSchema = z.object({
+  nutrient_type: z.number(),
+  amount_per_100g: z.number(),
+});
+export type CreateFoodNutrientValueInput = z.infer<typeof createFoodNutrientValueSchema>;
+
+export const createFoodItemSchema = z
+  .object({
+    name: z.string().trim().min(1, "Name is required"),
+    brand: z.string().trim(),
+    calories_per_100g: z.number().min(0),
+    protein_per_100g: z.number().min(0),
+    fat_per_100g: z.number().min(0),
+    carbs_per_100g: z.number().min(0),
+    nutrient_values: z.array(createFoodNutrientValueSchema).optional(),
+  })
+  .refine(
+    (data) => {
+      const ids = (data.nutrient_values ?? []).map((v) => v.nutrient_type);
+      return new Set(ids).size === ids.length;
+    },
+    { message: "Each nutrient may only be set once", path: ["nutrient_values"] },
+  );
+export type CreateFoodItemInput = z.infer<typeof createFoodItemSchema>;
+
+export const mealTypeSchema = z.enum(["breakfast", "lunch", "dinner", "snack"]);
+export type MealType = z.infer<typeof mealTypeSchema>;
+
+export const mealEntrySchema = z.object({
+  id: z.number(),
+  owner: z.number(),
+  datetime: z.string(),
+  meal_type: mealTypeSchema,
+  food_item: z.number(),
+  food_item_name: z.string(),
+  quantity_g: decimalStringSchema,
+  cost: decimalStringSchema.nullable(),
+  calories: decimalStringSchema,
+  protein: decimalStringSchema,
+  fat: decimalStringSchema,
+  carbs: decimalStringSchema,
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type MealEntry = z.infer<typeof mealEntrySchema>;
+
+export const createMealEntrySchema = z.object({
+  datetime: z.string(),
+  meal_type: mealTypeSchema,
+  food_item: z.number(),
+  quantity_g: z.number().positive(),
+  cost: z.number().nullable().optional(),
+});
+export type CreateMealEntryInput = z.infer<typeof createMealEntrySchema>;
