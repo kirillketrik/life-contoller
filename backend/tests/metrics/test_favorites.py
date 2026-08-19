@@ -91,6 +91,33 @@ class TestFavoriteMetricList:
         assert favorite["summary"]["count"] == 1
         assert len(favorite["buckets"]) == 1
 
+    def test_favorite_metric_type_matches_full_metric_type_shape(
+        self, authenticated_client, number_metric_type, regular_user
+    ):
+        """The frontend's metricTypeSchema requires every MetricType field
+        (incl. is_singleton/choices) — this endpoint hand-built that dict
+        separately from MetricTypeSerializer and drifted out of sync when
+        is_singleton was added, which silently broke the favorites list and
+        the favorite-toggle star for every consumer of this response."""
+        baker.make(FavoriteMetric, user=regular_user, metric_type=number_metric_type)
+
+        response = authenticated_client.get("/api/metric-types/favorites/")
+        assert response.status_code == status.HTTP_200_OK
+        [favorite] = response.data
+        assert favorite["metric_type"].keys() == {
+            "id",
+            "name",
+            "unit",
+            "value_type",
+            "aggregation",
+            "is_computed",
+            "is_singleton",
+            "created_by",
+            "created_at",
+            "updated_at",
+            "choices",
+        }
+
     def test_favorite_of_other_users_entries_not_included(
         self, authenticated_client, number_metric_type, regular_user, other_user
     ):

@@ -43,21 +43,22 @@ class MetricTypePermission(IsAdminOrReadOnly):
 
 class MetricEntryPermission(BasePermission):
     """Every authenticated user may log entries for themselves and manage
-    their own; admins may manage everyone's, consistent with them being able
-    to read everyone's entries too (`selectors.metric_entry_list_for_user`).
+    their own only — no admin override, consistent with
+    `selectors.metric_entry_list_for_user` no longer widening reads for
+    admins either.
 
     Unlike `MetricType` (an admin-defined shared catalog of what *can* be
     tracked), logging a reading against it is a personal action any user
     should be able to take — so this isn't role-gated through
-    `PermissionService` the way `MetricTypePermission` is; it's ownership,
-    same as `MetricThresholdPermission`.
+    `PermissionService` the way `MetricTypePermission` is; it's plain
+    ownership, same as `MetricThresholdPermission`.
     """
 
     def has_permission(self, request, view) -> bool:
         return bool(request.user and request.user.is_authenticated)
 
     def has_object_permission(self, request, view, obj) -> bool:
-        return PermissionService.is_admin(request.user) or obj.owner_id == request.user.id
+        return obj.owner_id == request.user.id
 
 
 class MetricThresholdPermission(BasePermission):

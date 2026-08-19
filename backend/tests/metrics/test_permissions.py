@@ -98,9 +98,12 @@ class TestMetricEntryPermissions:
         response = authenticated_client.patch(f"/api/metric-entries/{theirs.id}/", {"value": 99})
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_admin_can_edit_others_entry(self, admin_client, metric_entry):
+    def test_admin_cannot_edit_others_entry(self, admin_client, metric_entry):
+        """MetricEntry is ownership-only, no admin override — same rule as
+        MetricThreshold. `metric_entry` is owned by `regular_user`, not the
+        admin client, so this 404s like any other user's entry would."""
         response = admin_client.patch(f"/api/metric-entries/{metric_entry.id}/", {"value": 99})
-        assert response.status_code == status.HTTP_200_OK
+        assert response.status_code == status.HTTP_404_NOT_FOUND
 
     def test_user_only_sees_own_entries(self, authenticated_client, metric_entry, other_user):
         baker.make(
@@ -130,8 +133,18 @@ class TestMetricEntryPermissions:
         returned_ids = {item["id"] for item in response.data["results"]}
         assert returned_ids == {metric_entry.id}
 
-    def test_admin_sees_all_entries(self, admin_client, metric_entry, other_user):
-        other_entry = baker.make(
+    def test_admin_only_sees_own_entries(self, admin_client, admin_user, metric_entry, other_user):
+        """MetricEntry listing is ownership-only, same as MetricThreshold —
+        an admin's own list never widens to include other users' entries,
+        even though `metric_entry` and `other_entry` both exist."""
+        own_entry = baker.make(
+            MetricEntry,
+            metric_type=metric_entry.metric_type,
+            owner=admin_user,
+            value=75,
+            recorded_at=timezone.now(),
+        )
+        baker.make(
             MetricEntry,
             metric_type=metric_entry.metric_type,
             owner=other_user,
@@ -140,4 +153,4 @@ class TestMetricEntryPermissions:
         )
         response = admin_client.get("/api/metric-entries/")
         returned_ids = {item["id"] for item in response.data["results"]}
-        assert returned_ids == {metric_entry.id, other_entry.id}
+        assert returned_ids == {own_entry.id}

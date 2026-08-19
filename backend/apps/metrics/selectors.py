@@ -14,8 +14,6 @@ from django.db.models import Count, QuerySet
 from django.db.models.functions import TruncMonth
 from django.utils import timezone
 
-from apps.core.permissions import PermissionService
-
 from .aggregation import DataPoint, RangeSummary, Timeframe, TimeframeUnit, bucketize, summarize
 from .formula_engine import computed_series
 from .models import (
@@ -44,11 +42,12 @@ def metric_type_get(*, metric_type_id: int) -> MetricType | None:
 
 
 def metric_entry_list_for_user(*, user, metric_type_id: int | None = None) -> QuerySet[MetricEntry]:
-    """Entries owned by `user`; admins additionally see everyone's entries.
-    Optionally narrowed to a single `MetricType`."""
-    queryset = MetricEntry.objects.select_related("metric_type", "owner")
-    if not PermissionService.is_admin(user):
-        queryset = queryset.filter(owner=user)
+    """Entries owned by `user` only — ownership-based like `MetricThreshold`,
+    with no admin override. Logging entries is a personal action; an admin
+    account is not entitled to see or manage another user's readings just by
+    virtue of the role, same as thresholds and favorites. Optionally narrowed
+    to a single `MetricType`."""
+    queryset = MetricEntry.objects.select_related("metric_type", "owner").filter(owner=user)
     if metric_type_id is not None:
         queryset = queryset.filter(metric_type_id=metric_type_id)
     return queryset
@@ -123,21 +122,19 @@ def favorites_chart_data_for_user(*, user) -> list[dict]:
             buckets = []
             summary = RangeSummary(min=None, max=None, avg=None, count=0)
 
+        # Reuse MetricTypeSerializer rather than hand-building this dict, so a
+        # field added to MetricType's API shape later (is_singleton, choices)
+        # doesn't have to be remembered here too — a prior manual dict drifted
+        # out of sync with the frontend's metricTypeSchema and silently broke
+        # every consumer of this endpoint's shared query key (favorite
+        # toggling and the dashboard favorites section alike).
+        from .serializers import MetricTypeSerializer
+
         result.append(
             {
                 "id": favorite.id,
                 "order": favorite.order,
-                "metric_type": {
-                    "id": metric_type.id,
-                    "name": metric_type.name,
-                    "unit": metric_type.unit,
-                    "value_type": metric_type.value_type,
-                    "aggregation": metric_type.aggregation,
-                    "is_computed": metric_type.is_computed,
-                    "created_by": metric_type.created_by_id,
-                    "created_at": metric_type.created_at.isoformat(),
-                    "updated_at": metric_type.updated_at.isoformat(),
-                },
+                "metric_type": MetricTypeSerializer(metric_type).data,
                 "timeframe_unit": FAVORITE_CHART_TIMEFRAME.unit.value,
                 "buckets": [
                     {
