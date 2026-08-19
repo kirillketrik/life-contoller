@@ -25,6 +25,7 @@ class Resource(str, Enum):
     METRIC_TYPE = "metric_type"
     METRIC_ENTRY = "metric_entry"
     FORMULA_DEFINITION = "formula_definition"
+    NUTRIENT_TYPE = "nutrient_type"
 
 
 ADMIN_ROLE = "admin"
@@ -47,6 +48,12 @@ _ROLE_PERMISSIONS: dict[str, set[tuple[Resource, Action]]] = {
         (Resource.FORMULA_DEFINITION, Action.CREATE),
         (Resource.FORMULA_DEFINITION, Action.EDIT),
         (Resource.FORMULA_DEFINITION, Action.DELETE),
+        # NutrientType is a shared catalog, same pattern as MetricType: any
+        # authenticated user reads it, only admins define new entries — see
+        # apps.nutrition.permissions.NutrientTypePermission.
+        (Resource.NUTRIENT_TYPE, Action.CREATE),
+        (Resource.NUTRIENT_TYPE, Action.EDIT),
+        (Resource.NUTRIENT_TYPE, Action.DELETE),
     },
 }
 

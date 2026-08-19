@@ -26,3 +26,13 @@ export const DASHBOARD_ELEMENTS_QUERY_KEY = ["dashboard-elements"] as const;
 
 export const metricImportSettingsQueryKey = (metricTypeId: number) =>
   ["metric-import-settings", metricTypeId] as const;
+
+export const NUTRIENT_TYPES_QUERY_KEY = ["nutrient-types"] as const;
+
+export const FOOD_ITEMS_QUERY_KEY = ["food-items"] as const;
+
+export const foodItemsQueryKey = (search?: string) => ["food-items", search ?? ""] as const;
+
+export const MEAL_ENTRIES_QUERY_KEY = ["meal-entries"] as const;
+
+export const mealEntriesQueryKey = (date?: string) => ["meal-entries", date ?? ""] as const;

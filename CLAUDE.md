@@ -76,6 +76,9 @@ Today's rules, all in `apps/metrics/permissions.py`:
 | `FormulaDefinition` (`FormulaDefinitionPermission`, role-gated via `PermissionService`) | admins only | admins only |
 | `DashboardElement` (**ownership** — exposed as actions on `MetricTypeViewSet`, not a separate permission class; see "Dashboard elements" below) | own dashboard elements only | any authenticated user, for their own dashboard elements only |
 | `MetricImportSettings` / bulk import (**ownership** — exposed as actions on `MetricTypeViewSet`; see "Bulk metric-entry import" below) | own saved template only | any authenticated user, for their own data — bulk import is just repeated `MetricEntry` creation |
+| `NutrientType` (`apps/nutrition/permissions.py`'s `NutrientTypePermission`, role-gated via `PermissionService`, same pattern as `MetricType`) | any authenticated user | admins only — shared micronutrient catalog |
+| `FoodItem` (`FoodItemPermission`, **ownership**) | own food items only | any authenticated user, for their own food items only (no admin override) |
+| `MealEntry` (`MealEntryPermission`, **ownership**) | own logged meals only | any authenticated user, for their own logged meals only (no admin override) |
 
 The important asymmetry: **defining** a metric type is an admin action (it's shared, global
 config), but **logging a reading** against one is something every user does for themselves — so
@@ -440,6 +443,133 @@ Celery + Redis and MinIO are wired up (broker/result backend, worker service, S3
 media storage) starting with the metrics feature even though nothing uses them yet (no Celery
 tasks, no file fields), so future features don't require infra work.
 
+### Nutrition module (`apps/nutrition`)
+A separate Django app from `apps.metrics` — food tracking has its own domain shape (a food item
+is a multi-field record with fixed macro columns, not a single timestamped value), so it doesn't
+fit the generalized metrics layer directly, but it deliberately reuses that layer's *patterns*:
+selectors/serializers/permissions layering, the two permission patterns (role-gated vs.
+ownership), and the "nested nested-model write goes through `services.py`, not the serializer"
+rule. Building incrementally, phase by phase, one branch per phase; this pass is **Phase 1 (food
+item core)** only — recipes, meal logging, meal planning, and the Open Food Facts integration are
+later phases, not yet built.
+
+- **`NutrientType`** (admin-defined, role-gated exactly like `MetricType` — see the permissions
+  table above): `name`, `unit`, `category` (`macro` / `micro`), `is_system` (marks the
+  `seed_nutrients`-seeded baseline vs. an admin-added one later; informational only, doesn't affect
+  permissions). This is the micronutrient equivalent of `MetricType` — new nutrients (Vitamin C,
+  Iron, Fiber, ...) are new rows here, never new `FoodItem` columns, so the catalog is extensible
+  without a migration, same "generic over hardcoded fields" rule as the metrics layer.
+- **`FoodItem`** — **ownership-based, not a shared catalog** (the key difference from
+  `MetricType`/`NutrientType`): every authenticated user creates/edits/deletes their own food
+  items, scoped by `owner`, with no admin override — two users logging "chicken breast" may mean
+  different brands/prep, so there's no single canonical row to share. Calories/protein/fat/carbs
+  are fixed `DecimalField` columns (always needed, fast to read) rather than going through
+  `NutrientType`/`FoodNutrientValue` like every other nutrient — this is the one deliberate
+  exception to "generic over hardcoded fields," made because these four are universal to every
+  food item and worth the fast, always-present columns. `source` (`own`/`external`),
+  `external_id`, and `is_verified` exist on the model now (per the original phase plan) but are
+  **read-only through the API in this phase** — manually adding/editing a food item always
+  produces an `own`, verified row; only the not-yet-built Open Food Facts search phase will
+  actually write `external`/unverified items, server-side, on selection. Search
+  (`GET /api/food-items/?search=`) filters by name via the `(owner, name)` index, for the
+  eventual meal-logging food picker.
+- **`FoodNutrientValue`** — the join model (`food_item`, `nutrient_type`, `amount_per_100g`) that
+  lets a food item carry arbitrary micronutrient data with no schema change, same role
+  `MetricTypeChoice` plays for choice metrics. Written as a nested list on `FoodItemSerializer`
+  (`nutrient_values`), replaced atomically with its `FoodItem` via
+  `apps/nutrition/services.py`'s `create_food_item_with_nutrients`/`update_food_item_nutrients` —
+  same "nested multi-model write goes through `services.py`, called from the serializer's
+  `create`/`update`" pattern as `MetricType`+`MetricTypeChoice`. A `UniqueConstraint` on
+  (`food_item`, `nutrient_type`) plus a serializer-level `validate_nutrient_values` check reject a
+  food item that sets the same nutrient twice.
+- `management/commands/seed_nutrients.py` seeds a baseline catalog (fiber, sugar, saturated fat,
+  trans fat, cholesterol, sodium as `category=macro` — sub-macro breakdown nutrients, not one of
+  the four fixed `FoodItem` columns but still part of the macronutrient picture; the common
+  vitamins/minerals as `category=micro`) as `is_system=True` rows, idempotent like `seed_metrics`.
+- Frontend: `components/nutrition/food-item-dialog.tsx`'s `FoodItemDialog` does both create and
+  edit from one component (pass an optional `item` prop), same pattern as `MetricEntryDialog` —
+  including a `nutrient_values` row editor (nutrient `Select` + amount input, add/remove rows) that
+  mirrors `create-metric-type-dialog.tsx`'s choice-option row editor. Macro/amount inputs are
+  `type="text"` + `inputMode="decimal"` accepting either `.` or `,`, same known browser-locale
+  workaround as every other numeric input in this app (see the `feature/formula-engine`
+  architectural-decisions note below). `app/[locale]/nutrition/page.tsx` is the list/search page
+  (own `Input`-driven `search` query param, no debounce — small enough dataset that it wasn't
+  worth adding yet); `components/nutrition/delete-food-item-button.tsx` mirrors
+  `delete-metric-entry-button.tsx`'s `AlertDialog`-confirm pattern exactly. Sidebar gained its own
+  top-level "Питание" (Nutrition) group (`components/layout/app-sidebar.tsx`) — not nested under
+  "Метрики," since it's a sibling domain per the project overview, not a metrics feature.
+- **Test fixture note**: `other_user` (a second plain user for ownership/scoping tests) moved from
+  `tests/metrics/conftest.py` to the shared root `tests/conftest.py` once `tests/nutrition` needed
+  it too — see the `crud-resource` skill's "only put something here once two or more test packages
+  want it" rule; this is the first time that threshold was actually crossed.
+
+**Phase 2 (meal logging)**, added on top of Phase 1:
+
+- **`MealEntry`** — ownership-based like `FoodItem`: `owner`, `datetime`, `meal_type`
+  (`breakfast`/`lunch`/`dinner`/`snack`), `food_item` (required `PROTECT` FK — `recipe` isn't
+  wired up yet; Phase 4 adds `Recipe` and the `CheckConstraint` requiring exactly one of
+  `food_item`/`recipe`), `quantity_g`, `cost` (nullable, unused placeholder per the original
+  model spec — Phase 6 is what actually surfaces it as a real input; the field already exists so
+  that phase is additive, not a migration). `MealEntrySerializer.validate` rejects logging against
+  another user's `FoodItem` and a non-positive `quantity_g`. Per-entry `calories`/`protein`/`fat`/
+  `carbs` are `SerializerMethodField`s computed from `food_item`'s per-100g values × `quantity_g`
+  — never stored, so they can't drift from the food item they reference (same "computed property,
+  not a duplicated value" rule the original prompt calls out for `Recipe`/`MealEntry` totals).
+  `GET /api/meal-entries/?date=YYYY-MM-DD` narrows to one day, for the food-diary view.
+- **Daily totals are exposed through the existing formula-metric engine by *materializing* them
+  as ordinary `MetricEntry` rows**, not by extending the engine with a new "sum of X on this day"
+  node type. `apps/nutrition/services.recompute_daily_nutrition_metrics(user, entry_date)` sums
+  that day's `MealEntry` rows into calories/protein/fat/carbs and upserts one `MetricEntry` per
+  macro (looked up by name via `DAILY_METRIC_NAMES`, at noon local time for that date) on four
+  ordinary, non-computed `MetricType`s ("Калории (день)"/"Белки (день)"/"Жиры (день)"/"Углеводы
+  (день)", seeded by `apps/nutrition/management/commands/seed_nutrition_metrics.py`). Deletes the
+  materialized entry instead of writing an explicit `0` when a day ends up with no meals left — "no
+  data that day" and "logged zero" are different things. Called from `MealEntryViewSet.perform_
+  create`/`perform_update`/`perform_destroy` for every date touched (both the old and new date on
+  an update that moves an entry to a different day); skips silently if a daily-total `MetricType`
+  hasn't been seeded yet, same tolerance the formula engine already has for a formula referencing
+  a metric type nobody has logged data for. **Why materialize instead of a new engine node type**:
+  once the totals are ordinary `MetricEntry` rows, every existing metrics feature — charts,
+  timeframes, dashboard elements, thresholds — works completely unmodified; verified end-to-end via
+  browser (a materialized "Калории (день)" entry rendered correctly on both the metric detail page
+  and, once a dashboard element was configured for it through the existing, unmodified
+  `DashboardElementConfigDialog`, on the dashboard itself).
+- **"% of daily caloric target" is one more ordinary computed `MetricType`+`FormulaDefinition`** —
+  `seed_nutrition_metrics` also seeds "% дневной нормы калорий" =
+  `calories_day / tdee_mifflin * 100` (a plain `/` and `*`, `builtins.metric`/`binop` — no new
+  formula-engine capability needed), satisfying the "daily intake should be comparable against
+  [caloric needs], the same way threshold metrics report % time in range" design decision with
+  zero engine changes. Only seeded if the TDEE metric type (from `seed_metrics`) already exists —
+  run `seed_metrics` before `seed_nutrition_metrics` for it to be created; otherwise re-running
+  `seed_nutrition_metrics` later picks it up once TDEE exists.
+- **Known limitation, not yet solved**: the four daily-total `MetricType`s are ordinary (not
+  `is_computed`) so `recompute_daily_nutrition_metrics` can write `MetricEntry` rows into them
+  directly — but that also means nothing stops a user from manually logging their own entry against
+  one via `MetricEntryDialog`/the API (`is_computed=True` was considered and rejected: the metrics
+  selector layer branches on it to read from a `FormulaDefinition` instead of stored entries, which
+  is incompatible with reading materialized data). A manual entry would just get overwritten the
+  next time that day's meals are edited, so this self-heals rather than silently corrupting data,
+  but it's a real gap worth closing with a proper "system-managed, no manual entries" concept if it
+  ever causes real confusion.
+- Frontend: `components/nutrition/meal-entry-dialog.tsx`'s `MealEntryDialog` — create-and-edit in
+  one component (pass an optional `entry`), same pattern as `MetricEntryDialog`/`FoodItemDialog`,
+  plus a `defaultDate` prop so "log a meal" from the food-diary page seeds the datetime to noon of
+  whatever day is currently selected rather than always defaulting to now.
+  `components/nutrition/delete-meal-entry-button.tsx` mirrors `delete-food-item-button.tsx` exactly.
+  `app/[locale]/nutrition/log/page.tsx` (sidebar: "Дневник питания", above "Продукты") is the food
+  diary — a date picker (defaults to today) driving `GET /api/meal-entries/?date=`, four
+  `SummaryStat` tiles (reused from `components/metrics/summary-stat.tsx`) summing the visible day's
+  entries **client-side** (deliberately not a server endpoint — the day's entries are already
+  fetched for the table, and summing four numbers client-side isn't worth a second request), and a
+  table of that day's entries with inline edit/delete.
+- **Dev-tooling note from this pass**: Base UI `Select`/`Switch` components in this app need a full
+  synthetic `pointerdown`/`mousedown`/`pointerup`/`mouseup`/`click` event sequence to open/toggle
+  under this session's automation tooling — a bare `.click()` or a single synthetic `click` event
+  leaves them inert (already documented for `Select` popovers in the period-change-badges pass
+  above; confirmed here to apply to `Switch` too). Not a code issue — real user interaction and
+  Playwright/Selenium-style dispatch both work fine; it's specific to how this tooling synthesizes
+  events.
+
 ## Skills policy
 
 - Before starting any UI work, check for and use a project skill dedicated to
@@ -630,23 +760,36 @@ life-controller/
 │   │   │   ├── serializers.py
 │   │   │   ├── views.py           # LoginView / LogoutView / MeView
 │   │   │   └── urls.py
-│   │   └── metrics/               # MetricType(+Choice) / MetricEntry / MetricThreshold / FormulaDefinition / DashboardElement / MetricImportSettings
+│   │   ├── metrics/               # MetricType(+Choice) / MetricEntry / MetricThreshold / FormulaDefinition / DashboardElement / MetricImportSettings
+│   │   │   ├── models.py
+│   │   │   ├── selectors.py       # all read-query logic for this app
+│   │   │   ├── services.py        # write-side logic beyond a serializer's create/update (nested MetricType+choices writes)
+│   │   │   ├── aggregation.py     # summary / time-in-range / named ranges (ORM-free); bucketize() unused by app code, kept for its own tests
+│   │   │   ├── formula_engine/    # AST-based formula engine — nodes/interpreter/resolvers/validation/series/builtins
+│   │   │   ├── serializers.py
+│   │   │   ├── views.py
+│   │   │   ├── permissions.py
+│   │   │   ├── admin.py
+│   │   │   ├── urls.py
+│   │   │   └── management/commands/
+│   │   │       └── seed_metrics.py    # idempotent baseline MetricTypes (incl. choice options) + FormulaDefinitions
+│   │   └── nutrition/              # NutrientType / FoodItem / FoodNutrientValue / MealEntry (Phases 1-2 — see "Nutrition module")
 │   │       ├── models.py
-│   │       ├── selectors.py       # all read-query logic for this app
-│   │       ├── services.py        # write-side logic beyond a serializer's create/update (nested MetricType+choices writes)
-│   │       ├── aggregation.py     # summary / time-in-range / named ranges (ORM-free); bucketize() unused by app code, kept for its own tests
-│   │       ├── formula_engine/    # AST-based formula engine — nodes/interpreter/resolvers/validation/series/builtins
+│   │       ├── selectors.py
+│   │       ├── services.py        # nested FoodItem+FoodNutrientValue writes; recompute_daily_nutrition_metrics
 │   │       ├── serializers.py
 │   │       ├── views.py
 │   │       ├── permissions.py
 │   │       ├── admin.py
 │   │       ├── urls.py
 │   │       └── management/commands/
-│   │           └── seed_metrics.py    # idempotent baseline MetricTypes (incl. choice options) + FormulaDefinitions
+│   │           ├── seed_nutrients.py           # idempotent baseline NutrientType catalog
+│   │           └── seed_nutrition_metrics.py   # daily-total MetricTypes + %-of-TDEE FormulaDefinition
 │   └── tests/                     # all backend tests live here, mirroring apps/
-│       ├── conftest.py            # fixtures shared across every test package
+│       ├── conftest.py            # fixtures shared across every test package (incl. other_user)
 │       ├── core/
 │       ├── users/
+│       ├── nutrition/
 │       └── metrics/
 │           └── conftest.py        # fixtures shared within tests/metrics/ only
 └── frontend/
@@ -669,10 +812,13 @@ life-controller/
     │       ├── formulas/
     │       │   ├── page.tsx           # FormulaDefinition list, Russian-rendered (admin-only, incl. reads)
     │       │   └── builder/page.tsx   # drag-and-drop formula builder (create-only, see "Computed metrics")
-    │       └── metrics/
-    │           ├── page.tsx           # MetricType list + create (admin-gated)
-    │           ├── [id]/page.tsx      # dashboard (chart/summary/time-in-range) + entry list/create/edit/delete
-    │           └── import/page.tsx    # bulk metric-entry import (template builder + paste/upload + preview)
+    │       ├── metrics/
+    │       │   ├── page.tsx           # MetricType list + create (admin-gated)
+    │       │   ├── [id]/page.tsx      # dashboard (chart/summary/time-in-range) + entry list/create/edit/delete
+    │       │   └── import/page.tsx    # bulk metric-entry import (template builder + paste/upload + preview)
+    │       └── nutrition/
+    │           ├── page.tsx           # FoodItem list + search + create/edit/delete (ownership-gated, Phase 1)
+    │           └── log/page.tsx       # food diary: date picker + daily totals + meal entry list (Phase 2)
     ├── components/
     │   ├── ui/                      # shadcn/ui primitives only
     │   ├── shared/                  # domain-agnostic reusable widgets (not shadcn primitives)
@@ -696,6 +842,11 @@ life-controller/
     │   │   ├── create-metric-type-dialog.tsx      # incl. the choice-option row editor and is_singleton switch
     │   │   ├── formula-builder/             # canvas/palettes/preview + use-formula-builder.ts state hook
     │   │   └── bulk-import/                 # bulk-import.tsx + use-bulk-import.ts hook + preview-table.tsx
+    │   ├── nutrition/                # feature components (Phase 1)
+    │   │   ├── food-item-dialog.tsx         # create AND edit (pass `item`) — same pattern as MetricEntryDialog
+    │   │   ├── delete-food-item-button.tsx  # icon button + AlertDialog confirm, per row
+    │   │   ├── meal-entry-dialog.tsx        # create AND edit (pass `entry`) — Phase 2
+    │   │   └── delete-meal-entry-button.tsx # icon button + AlertDialog confirm, per row — Phase 2
     │   ├── auth-provider.tsx        # current-user context, backed by TanStack Query
     │   ├── query-provider.tsx
     │   ├── theme-provider.tsx
@@ -737,6 +888,23 @@ with their options, neck/waist/hip circumference, date of birth, weight, plus th
 
 ```bash
 docker compose exec backend python manage.py seed_metrics
+```
+
+Seed the baseline `NutrientType` catalog (fiber, sugar, saturated fat, cholesterol, sodium, and
+common vitamins/minerals — see `apps/nutrition/management/commands/seed_nutrients.py`). Idempotent
+(matches on `NutrientType.name`), safe to re-run:
+
+```bash
+docker compose exec backend python manage.py seed_nutrients
+```
+
+Seed the four materialized daily-total `MetricType`s (Калории/Белки/Жиры/Углеводы (день)) and, if
+`seed_metrics` has already run, the "% дневной нормы калорий" formula comparing them against TDEE
+— see `apps/nutrition/management/commands/seed_nutrition_metrics.py`. Run `seed_metrics` first (or
+re-run this command afterward) to get the TDEE-comparison formula too; idempotent either way:
+
+```bash
+docker compose exec backend python manage.py seed_nutrition_metrics
 ```
 
 Backend tests and lint (also runnable outside Docker via `uv run` from `backend/`):
@@ -785,6 +953,8 @@ Installing a new package or shadcn component works the same way, e.g.
 | Two small bugfixes: (1) a `number`-valued `MetricEntry`'s value `Input` was `type="number"`, whose accepted decimal separator follows browser/OS locale — under Russian locale that's a comma, so typing `4.4` silently dropped the fractional part; switched to `type="text"` + `inputMode="decimal"`, normalizing `,`→`.` at submit (see "Computed metrics"-adjacent `MetricEntryDialog` notes above). (2) Bulk import's `{date}` token always discarded any parsed time-of-day and hardcoded midnight (`time.min`) as `recorded_at`'s time component; `services._parse_bulk_date` now returns a full `datetime`, using the parsed time when `date_format` contains a time directive (`%H`/`%I`/`%M`/`%S`/`%p`, detected via regex on the format string) and falling back to the current time of day otherwise — date stays required, only time is optional | `feature/dashboard-elements` | Fixed, manually verified via browser (typed `4.4` into the Уровень сахара number field and confirmed it saved and displayed as `4.4`, not `4`; bulk-import preview with a date-only format showed the actual current time instead of `00:00:00`, and a format with `%H:%M` correctly carried the parsed time through to `recorded_at`); backend: 193/193 tests passing incl. 2 new regression tests (`test_date_only_format_uses_current_time_not_midnight`, `test_date_format_with_time_directive_preserves_parsed_time`), `ruff check .` clean on every file this pass touched (18 pre-existing `E501` errors in untouched test files predate this branch); frontend: `eslint`/`tsc` clean. Hit the documented stale-Turbopack-HMR dev-loop quirk once mid-session — `docker compose restart frontend` fixed it |
 | Bugfix: charts always show candlesticks-when-spread + OHLC-bucketed values, contrary to product intent — `MetricChart` dropped its `shouldRenderCandlesticks` heuristic/`CandlestickSeries` branch entirely (line-only, no exceptions for any timeframe or data shape), and both `GET /aggregate/` and `dashboard_element_stats` stopped calling `bucketize` for the chart series, returning a flat `points` list (every raw entry in range, chronological) instead of `buckets` — a `1y`/`3y`/`all` chart previously collapsed many entries into one bucket's `close` value per week/month, hiding all the intermediate readings; now every logged value is its own point on the line, at any timeframe. `bucketize`/`OHLCBucket` stay in `aggregation.py` (still covered by their own unit tests) since nothing about the underlying utility was wrong — only the chart-facing call sites were removed. `MetricChart` dedupes points landing on the same whole second (`lightweight-charts` requires strictly increasing unique timestamps), keeping the later value | `feature/dashboard-elements` | Fixed, manually verified end-to-end (seeded 6 same-day blood-sugar entries with real spread — previously enough to trigger candlesticks in a day bucket — and confirmed via a direct API check that `/aggregate/` now returns all 6 as individual `points`, not one bucket; summary min/max/avg on the metric detail page matched the raw entries); backend: 193/193 tests passing incl. `test_aggregate_api.py`/`test_dashboard_elements.py` updated from bucket to point-count assertions, `ruff check .` clean on every file this pass touched; frontend: `eslint`/`tsc` clean. Hit the documented stale-Granian-reload dev-loop quirk mid-session (the aggregate endpoint kept serving the old `buckets` shape after the `views.py`/`selectors.py` edit) — `docker compose restart backend` fixed it |
 | Threshold bound lines on charts + time-in-range as a dashboard element (`GET /aggregate/` and `dashboard_element_stats` both gained a `threshold` field — `{lower_bound, upper_bound}` or `null`, resolved from the same `MetricThreshold` fetch each already did for `time_in_range_percent` — and `MetricChart` draws each non-null bound as a red dashed `series.createPriceLine`; new `DashboardElement.show_time_in_range` boolean (migration `0012`), computed via the existing `aggregation.time_in_range_percent` over the same resolved-range points used for max/min/avg, wired into `DashboardElementInputSerializer`'s "at least one `show_*`" validation, `DashboardElementConfigDialog`'s toggle list, and `DashboardElementCard`'s stat row reusing the detail page's existing `statTimeInRange` label) | `feature/dashboard-elements` | Implemented, manually verified end-to-end via browser (seeded a 4.0-6.5 threshold on the blood-sugar metric type with 6 entries spanning in- and out-of-range values; confirmed via direct API checks that both `/aggregate/` and `/api/dashboard-elements/` return the correct `threshold` object and `time_in_range_percent` matching 5/6 in-range = 83.3%; enabled chart + time-in-range on the dashboard-element config dialog, saved, and confirmed the dashboard block renders the time-in-range stat; no console errors from `createPriceLine`); backend: 198/198 tests passing incl. 5 new (`test_time_in_range_only_present_when_show_time_in_range_true`, `test_time_in_range_is_null_without_a_configured_threshold`, `test_chart_includes_threshold_for_bound_lines`, `test_saving_show_time_in_range_only_is_accepted` in `test_dashboard_elements.py`, plus a `threshold`-field assertion in `test_aggregate_api.py`), `ruff check .` clean on every file this pass touched; frontend: `eslint`/`tsc` clean |
+| Nutrition module Phase 1 — food item core (new `apps/nutrition` Django app; `NutrientType` catalog, role-gated like `MetricType`, seeded via `seed_nutrients` with the usual vitamins/minerals + sub-macro breakdown nutrients; `FoodItem` — ownership-based, not shared, fixed `calories`/`protein`/`fat`/`carbs` Decimal columns + a `FoodNutrientValue` join table for arbitrary micronutrients, `source`/`external_id`/`is_verified` present on the model but read-only via the API this phase (own/verified only — external-search import is a later phase); `GET/POST/PATCH/DELETE /api/food-items/` incl. `?search=` by name, `GET /api/nutrient-types/`; frontend `FoodItemDialog` create+edit incl. a nutrient-value row editor, `DeleteFoodItemButton`, `/nutrition` list/search page, new sidebar "Питание" group) | `feature/nutrition-food-items` | Implemented, manually verified end-to-end via browser (created "Куриная грудка" with macros + a Vitamin C value, edited its calories, searched by substring match and by a non-matching term, deleted it — each step reflected correctly in the table); backend: 211/211 tests passing incl. 13 new for nutrition (`test_nutrient_types.py`, `test_food_items.py`), `ruff check .` clean on every file this pass touched (pre-existing `E501` errors in untouched metrics test files predate this branch); frontend: `eslint`/`tsc --noEmit` clean. `other_user` fixture promoted from `tests/metrics/conftest.py` to the shared root `tests/conftest.py` now that a second test package needs it. Recipes, meal planning, and the Open Food Facts integration are later phases, not yet built. |
+| Nutrition module Phase 2 — meal logging (`MealEntry` — ownership-based, `food_item` required FK (`recipe` not wired up until Phase 4), per-entry `calories`/`protein`/`fat`/`carbs` computed from the food item rather than stored; `GET/POST/PATCH/DELETE /api/meal-entries/` incl. `?date=` filter; daily calorie/macro totals exposed through the *existing* formula-metric engine by materializing them as ordinary `MetricEntry` rows — `services.recompute_daily_nutrition_metrics`, called on every `MealEntry` create/update/delete — onto four new non-computed `MetricType`s seeded by `seed_nutrition_metrics`, so they get charts/timeframes/dashboard elements with zero changes to `apps.metrics`; a further computed `MetricType`+`FormulaDefinition` "% дневной нормы калорий" compares daily calories against the existing TDEE formula using only the engine's existing `/`/`*` nodes; frontend `MealEntryDialog` create+edit incl. a food-item picker and a `defaultDate` seed, `DeleteMealEntryButton`, `/nutrition/log` food-diary page with a date picker, client-side-summed daily-total `SummaryStat` tiles, and an entry table; sidebar gained "Дневник питания" above "Продукты") | `feature/nutrition-meal-logging` | Implemented, manually verified end-to-end via browser (logged a 150g chicken-breast breakfast, confirmed the diary's totals and per-entry calories matched the expected math; edited the quantity to 200g and confirmed both the diary and the materialized `MetricEntry` recomputed; deleted the entry and confirmed both the diary and the materialized entry cleared instead of showing a stale zero; the new "Калории (день)" metric type rendered correctly on its own detail page using the *unmodified* chart/summary UI, and — after configuring a dashboard element for it through the *unmodified* `DashboardElementConfigDialog` — on the dashboard itself; the seeded "% дневной нормы калорий" formula evaluated a real percentage against the account's existing TDEE data); backend: 223/223 tests passing incl. 12 new for meal entries/daily-total materialization, `ruff check .` clean on every file this pass touched; frontend: `eslint`/`tsc --noEmit` clean. Known limitation documented above: the four daily-total metric types aren't `is_computed` (a materialization constraint, not an oversight), so nothing currently stops a manual `MetricEntry` against them — self-heals on the next meal edit for that day, but not actually prevented. |
 
 `MetricEntry` and `MetricThreshold` are **ownership-based**, not admin-gated: any authenticated
 user creates/edits/deletes their own entries and thresholds; only `MetricType` definitions and
@@ -792,4 +962,6 @@ user creates/edits/deletes their own entries and thresholds; only `MetricType` d
 correction partway through the dashboards work, since the original all-admin-gated `MetricEntry`
 rule made no sense for a personal tracking app once users other than the admin exist.
 
-No other feature modules (nutrition, workouts, finances) have been started yet.
+No other feature modules (workouts, finances) have been started yet; the nutrition module is under
+way (Phases 1-2 above) per the phased plan in its implementation prompt — Recipes, meal planning,
+and the Open Food Facts integration remain.

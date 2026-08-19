@@ -30,6 +30,14 @@ def regular_user(db):
 
 
 @pytest.fixture
+def other_user(db):
+    """A second plain user, distinct from `regular_user`, for ownership/scoping
+    tests. Shared across test packages (metrics, nutrition), hence living here
+    rather than in one package's own conftest."""
+    return baker.make("users.User")
+
+
+@pytest.fixture
 def admin_user(admin_group):
     """Deliberately overrides pytest-django's built-in `admin_user` fixture
     (which creates a superuser): ours is a member of the `admin` role group,

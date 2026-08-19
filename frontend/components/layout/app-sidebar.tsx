@@ -1,6 +1,17 @@
 "use client";
 
-import { ChevronsUpDown, LayoutDashboard, ListTree, LogOut, Package, Pencil, Sigma, Upload } from "lucide-react";
+import {
+  Apple,
+  BookOpen,
+  ChevronsUpDown,
+  LayoutDashboard,
+  ListTree,
+  LogOut,
+  Package,
+  Pencil,
+  Sigma,
+  Upload,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
 
 import { useAuth } from "@/components/auth-provider";
@@ -91,6 +102,40 @@ export function AppSidebar() {
                     >
                       <Upload />
                       <span>{t("bulkImport")}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                </SidebarMenu>
+              </SidebarGroupContent>
+            </CollapsibleContent>
+          </SidebarGroup>
+        </Collapsible>
+
+        <Collapsible defaultOpen>
+          <SidebarGroup>
+            <SidebarGroupLabel render={<CollapsibleTrigger />} className="cursor-pointer">
+              {t("nutritionGroup")}
+            </SidebarGroupLabel>
+            <CollapsibleContent>
+              <SidebarGroupContent>
+                <SidebarMenu>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      render={<Link href="/nutrition/log" />}
+                      isActive={pathname.startsWith("/nutrition/log")}
+                      tooltip={t("nutritionLog")}
+                    >
+                      <BookOpen />
+                      <span>{t("nutritionLog")}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      render={<Link href="/nutrition" />}
+                      isActive={pathname === "/nutrition"}
+                      tooltip={t("foodItems")}
+                    >
+                      <Apple />
+                      <span>{t("foodItems")}</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 </SidebarMenu>
