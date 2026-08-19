@@ -4,6 +4,7 @@ from .models import (
     FavoriteMetric,
     FormulaDefinition,
     MetricEntry,
+    MetricImportSettings,
     MetricThreshold,
     MetricType,
     MetricTypeChoice,
@@ -56,6 +57,14 @@ class MetricThresholdAdmin(admin.ModelAdmin):
 @admin.register(FavoriteMetric)
 class FavoriteMetricAdmin(admin.ModelAdmin):
     list_display = ["metric_type", "user", "order", "created_at"]
+    list_filter = ["metric_type"]
+    search_fields = ["user__username", "metric_type__name"]
+    autocomplete_fields = ["metric_type", "user"]
+
+
+@admin.register(MetricImportSettings)
+class MetricImportSettingsAdmin(admin.ModelAdmin):
+    list_display = ["metric_type", "user", "template", "separator", "date_format"]
     list_filter = ["metric_type"]
     search_fields = ["user__username", "metric_type__name"]
     autocomplete_fields = ["metric_type", "user"]

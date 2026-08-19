@@ -20,6 +20,10 @@ copy via `next-intl`. Follow these patterns for any new UI work instead of inven
   install it with `pnpm dlx shadcn add <name>` **through the frontend Docker container**
   (`docker compose exec frontend pnpm dlx shadcn add ...` — Node/pnpm aren't on the host `PATH`,
   and the container's `node_modules` is a separate named volume from any host install).
+- `components/shared/` holds domain-agnostic reusable widgets that are built on top of shadcn
+  primitives but aren't shadcn primitives themselves (e.g. `template-builder.tsx`/
+  `separator-field.tsx`, the positional-template builder used by bulk import). Check there before
+  building a new one-off version of something that isn't tied to a specific feature's data shape.
 
 ## Sidebar (`components/layout/app-sidebar.tsx`)
 
@@ -70,9 +74,12 @@ copy via `next-intl`. Follow these patterns for any new UI work instead of inven
   components. Never hardcode an English (or Russian) string directly in JSX.
 - Add new copy to `frontend/messages/ru.json` under a namespace matching the component/page (see
   the existing namespaces: `nav`, `dashboard`, `metrics`, `metricDetail`, `metricEntry`,
-  `threshold`, `metricDashboard`, `metricChart`, `formulas`, `sidebar`, `common`, `login`). Reuse
-  `common` for generic strings (Сохранить/Отмена/Закрыть/...) instead of duplicating them
-  per-namespace.
+  `threshold`, `metricDashboard`, `metricChart`, `formulas`, `formulaBuilder`, `sidebar`, `common`,
+  `login`, `templateBuilder`, `separatorField`, `bulkImport`). Reuse `common` for generic strings
+  (Сохранить/Отмена/Закрыть/...) instead of duplicating them per-namespace — and reuse
+  `templateBuilder`/`separatorField` for their own copy from any component that embeds those two
+  domain-agnostic `components/shared/` widgets, rather than duplicating swap/separator/preset
+  labels into a feature-specific namespace.
 - **Before shipping, verify every `t("key")` call actually resolves** — a namespace/key typo
   doesn't fail to build, it throws `MISSING_MESSAGE` at render time (this has bitten this exact
   redesign once: a dialog referenced `metrics.create` when only `common.create` existed). Grep

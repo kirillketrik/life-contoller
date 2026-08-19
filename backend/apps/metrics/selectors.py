@@ -22,6 +22,7 @@ from .models import (
     FavoriteMetric,
     FormulaDefinition,
     MetricEntry,
+    MetricImportSettings,
     MetricThreshold,
     MetricType,
     ValueType,
@@ -158,6 +159,12 @@ def favorites_chart_data_for_user(*, user) -> list[dict]:
             }
         )
     return result
+
+
+def metric_import_settings_get_for_user(
+    *, user, metric_type_id: int
+) -> MetricImportSettings | None:
+    return MetricImportSettings.objects.filter(user=user, metric_type_id=metric_type_id).first()
 
 
 def formula_definition_list() -> QuerySet[FormulaDefinition]:

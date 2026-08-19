@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronsUpDown, LayoutDashboard, ListTree, LogOut, Package, Pencil, Sigma } from "lucide-react";
+import { ChevronsUpDown, LayoutDashboard, ListTree, LogOut, Package, Pencil, Sigma, Upload } from "lucide-react";
 import { useTranslations } from "next-intl";
 
 import { useAuth } from "@/components/auth-provider";
@@ -76,11 +76,21 @@ export function AppSidebar() {
                   <SidebarMenuItem>
                     <SidebarMenuButton
                       render={<Link href="/metrics" />}
-                      isActive={pathname.startsWith("/metrics")}
+                      isActive={pathname === "/metrics" || /^\/metrics\/\d+/.test(pathname)}
                       tooltip={t("metricTypes")}
                     >
                       <ListTree />
                       <span>{t("metricTypes")}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      render={<Link href="/metrics/import" />}
+                      isActive={pathname.startsWith("/metrics/import")}
+                      tooltip={t("bulkImport")}
+                    >
+                      <Upload />
+                      <span>{t("bulkImport")}</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 </SidebarMenu>

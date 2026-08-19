@@ -6,7 +6,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import formula_engine, selectors
+from . import formula_engine, selectors, services
 from .aggregation import Timeframe, TimeframeUnit, bucketize, summarize, time_in_range_percent
 from .formula_engine.interpreter import evaluate_node
 from .formula_engine.resolvers import AsOfResolver
@@ -14,6 +14,7 @@ from .models import (
     FavoriteMetric,
     FormulaDefinition,
     MetricEntry,
+    MetricImportSettings,
     MetricThreshold,
     MetricType,
     ValueType,
@@ -26,15 +27,18 @@ from .permissions import (
 )
 from .serializers import (
     AggregateQuerySerializer,
+    BulkImportRequestSerializer,
     FavoriteReorderSerializer,
     FormulaDefinitionSerializer,
     FormulaPreviewSerializer,
     MetricEntrySerializer,
+    MetricImportSettingsSerializer,
     MetricThresholdSerializer,
     MetricTypeSerializer,
 )
 
 FAVORITE_ACTIONS = {"favorite", "favorites", "reorder_favorites"}
+IMPORT_ACTIONS = {"import_settings", "import_preview", "bulk_import"}
 
 DEFAULT_RELATIVE_DAYS = 30
 
@@ -48,14 +52,15 @@ class MetricTypeViewSet(viewsets.ModelViewSet):
         return selectors.metric_type_list()
 
     def get_permissions(self):
-        """Favoriting is a personal action any authenticated user takes on
-        their own dashboard, not a role-gated edit of the shared MetricType
-        catalog — same ownership-vs-role-gated distinction as MetricEntry/
-        MetricThreshold (see apps.metrics.permissions), just exposed as
-        actions on this viewset instead of a separate one. Ownership itself
-        is enforced by scoping every query to `request.user` in the action
-        bodies below, not by an object-level permission check."""
-        if self.action in FAVORITE_ACTIONS:
+        """Favoriting and bulk-importing entries are personal actions any
+        authenticated user takes on their own data, not a role-gated edit of
+        the shared MetricType catalog — same ownership-vs-role-gated
+        distinction as MetricEntry/MetricThreshold (see
+        apps.metrics.permissions), just exposed as actions on this viewset
+        instead of a separate one. Ownership itself is enforced by scoping
+        every query to `request.user` in the action bodies below, not by an
+        object-level permission check."""
+        if self.action in FAVORITE_ACTIONS | IMPORT_ACTIONS:
             return [permissions.IsAuthenticated()]
         return super().get_permissions()
 
@@ -97,6 +102,97 @@ class MetricTypeViewSet(viewsets.ModelViewSet):
                 favorite.order = index
                 favorite.save(update_fields=["order"])
         return Response(selectors.favorites_chart_data_for_user(user=request.user))
+
+    @action(detail=True, methods=["get", "put"], url_path="import-settings")
+    def import_settings(self, request, pk=None):
+        """The requesting user's saved default bulk-import template for this
+        metric type. GET returns `null` (not 404) when none is saved yet —
+        the frontend pre-fills the form from it when present and leaves the
+        builder empty otherwise. PUT upserts it (create on first save, update
+        on every save after)."""
+        metric_type = selectors.metric_type_get(metric_type_id=pk)
+        if metric_type is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        existing = selectors.metric_import_settings_get_for_user(
+            user=request.user, metric_type_id=metric_type.id
+        )
+        if request.method == "GET":
+            if existing is None:
+                return Response(None)
+            return Response(MetricImportSettingsSerializer(existing).data)
+
+        serializer = MetricImportSettingsSerializer(instance=existing, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        if existing is None:
+            instance = MetricImportSettings.objects.create(
+                user=request.user, metric_type=metric_type, **serializer.validated_data
+            )
+        else:
+            instance = serializer.save()
+        return Response(MetricImportSettingsSerializer(instance).data)
+
+    def _importable_metric_type_or_error(self, pk):
+        metric_type = selectors.metric_type_get(metric_type_id=pk)
+        if metric_type is None:
+            return None, Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        if metric_type.is_computed or metric_type.is_singleton:
+            return None, Response(
+                {"detail": "Computed and singleton metric types can't be bulk-imported."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return metric_type, None
+
+    @action(detail=True, methods=["post"], url_path="import/preview")
+    def import_preview(self, request, pk=None):
+        """Resolves what a bulk-import run would do — per-row parsed value,
+        recorded_at, and new/duplicate_skip/duplicate_overwrite/invalid
+        status — without persisting anything. Shares its resolution logic
+        with `bulk_import` below via `services.resolve_bulk_import_items`."""
+        metric_type, error = self._importable_metric_type_or_error(pk)
+        if error is not None:
+            return error
+
+        serializer = BulkImportRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        results = services.resolve_bulk_import_items(
+            metric_type=metric_type,
+            user=request.user,
+            items=data["items"],
+            date_format=data["date_format"],
+            decimal_separator=data["decimal_separator"],
+            duplicate_policy=data["duplicate_policy"],
+        )
+        return Response({"items": [item.to_dict() for item in results]})
+
+    @action(detail=True, methods=["post"], url_path="import")
+    def bulk_import(self, request, pk=None):
+        """Actually creates/overwrites `MetricEntry` rows for a bulk-import
+        run. Partial success, same as `resolve_bulk_import_items`'s
+        row-by-row statuses: a bad or duplicate-skipped row never blocks the
+        rest of the batch."""
+        metric_type, error = self._importable_metric_type_or_error(pk)
+        if error is not None:
+            return error
+
+        serializer = BulkImportRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        results = services.resolve_bulk_import_items(
+            metric_type=metric_type,
+            user=request.user,
+            items=data["items"],
+            date_format=data["date_format"],
+            decimal_separator=data["decimal_separator"],
+            duplicate_policy=data["duplicate_policy"],
+        )
+        summary = services.execute_bulk_import(
+            metric_type=metric_type, user=request.user, resolved_items=results
+        )
+        return Response(summary)
 
     @action(detail=True, methods=["get"])
     def aggregate(self, request, pk=None):

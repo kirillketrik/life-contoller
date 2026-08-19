@@ -7,6 +7,7 @@ from .aggregation import TimeframeUnit
 from .models import (
     FormulaDefinition,
     MetricEntry,
+    MetricImportSettings,
     MetricThreshold,
     MetricType,
     MetricTypeChoice,
@@ -256,6 +257,49 @@ class FavoriteReorderSerializer(serializers.Serializer):
     user's current favorites (checked in the view, against the DB)."""
 
     metric_type_ids = serializers.ListField(child=serializers.IntegerField(), allow_empty=False)
+
+
+class MetricImportSettingsSerializer(serializers.ModelSerializer):
+    user = serializers.PrimaryKeyRelatedField(read_only=True)
+    metric_type = serializers.PrimaryKeyRelatedField(read_only=True)
+    # A separator is often meaningful whitespace (a space or a tab) — the
+    # auto-generated CharField's default trim_whitespace=True would reduce
+    # " " to "" and reject it as blank, so it's overridden explicitly here.
+    separator = serializers.CharField(trim_whitespace=False, max_length=10)
+
+    class Meta:
+        model = MetricImportSettings
+        fields = [
+            "id",
+            "metric_type",
+            "user",
+            "template",
+            "separator",
+            "date_format",
+            "decimal_separator",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "metric_type", "user", "created_at", "updated_at"]
+
+
+class BulkImportItemInputSerializer(serializers.Serializer):
+    """One already client-split row: raw string tokens straight from
+    positionally splitting a pasted line by the chosen template, not yet
+    parsed into a typed value — see `services.resolve_bulk_import_items`."""
+
+    value = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
+    date = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
+
+
+class BulkImportRequestSerializer(serializers.Serializer):
+    """Validates the shared request body for both the preview and create
+    bulk-import actions on `MetricTypeViewSet`."""
+
+    items = BulkImportItemInputSerializer(many=True, allow_empty=False)
+    date_format = serializers.CharField(trim_whitespace=False, min_length=1)
+    decimal_separator = serializers.ChoiceField(choices=[".", ","], default=".")
+    duplicate_policy = serializers.ChoiceField(choices=["skip", "overwrite"], default="skip")
 
 
 class AggregateQuerySerializer(serializers.Serializer):

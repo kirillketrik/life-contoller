@@ -280,3 +280,76 @@ export const favoriteMetricSchema = z.object({
 export type FavoriteMetric = z.infer<typeof favoriteMetricSchema>;
 
 export const favoriteMetricListSchema = z.array(favoriteMetricSchema);
+
+export const metricImportSettingsSchema = z.object({
+  id: z.number(),
+  metric_type: z.number(),
+  user: z.number(),
+  template: z.string(),
+  separator: z.string(),
+  date_format: z.string(),
+  decimal_separator: z.string(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type MetricImportSettings = z.infer<typeof metricImportSettingsSchema>;
+
+export const metricImportSettingsOrNullSchema = metricImportSettingsSchema.nullable();
+
+export const createMetricImportSettingsSchema = z.object({
+  template: z.string().trim().min(1, "Template is required"),
+  separator: z.string().min(1, "Separator is required"),
+  date_format: z.string().trim().min(1, "Date format is required"),
+  decimal_separator: z.enum([".", ","]),
+});
+export type CreateMetricImportSettingsInput = z.infer<typeof createMetricImportSettingsSchema>;
+
+export const bulkImportDuplicatePolicySchema = z.enum(["skip", "overwrite"]);
+export type BulkImportDuplicatePolicy = z.infer<typeof bulkImportDuplicatePolicySchema>;
+
+export const bulkImportItemInputSchema = z.object({
+  value: z.string().nullable(),
+  date: z.string().nullable(),
+});
+export type BulkImportItemInput = z.infer<typeof bulkImportItemInputSchema>;
+
+export const bulkImportRequestSchema = z.object({
+  items: z.array(bulkImportItemInputSchema).min(1),
+  date_format: z.string(),
+  decimal_separator: z.enum([".", ","]),
+  duplicate_policy: bulkImportDuplicatePolicySchema,
+});
+export type BulkImportRequest = z.infer<typeof bulkImportRequestSchema>;
+
+export const bulkImportItemStatusSchema = z.enum([
+  "new",
+  "duplicate_skip",
+  "duplicate_overwrite",
+  "invalid",
+]);
+export type BulkImportItemStatus = z.infer<typeof bulkImportItemStatusSchema>;
+
+export const bulkImportItemResultSchema = z.object({
+  line_number: z.number(),
+  raw_value: z.string().nullable(),
+  raw_date: z.string().nullable(),
+  value: z.union([z.number(), z.string(), z.boolean()]).nullable(),
+  recorded_at: z.string().nullable(),
+  status: bulkImportItemStatusSchema,
+  error_code: z.string().nullable(),
+});
+export type BulkImportItemResult = z.infer<typeof bulkImportItemResultSchema>;
+
+export const bulkImportPreviewResponseSchema = z.object({
+  items: z.array(bulkImportItemResultSchema),
+});
+export type BulkImportPreviewResponse = z.infer<typeof bulkImportPreviewResponseSchema>;
+
+export const bulkImportResultResponseSchema = z.object({
+  created_count: z.number(),
+  updated_count: z.number(),
+  skipped_count: z.number(),
+  invalid_count: z.number(),
+  items: z.array(bulkImportItemResultSchema),
+});
+export type BulkImportResultResponse = z.infer<typeof bulkImportResultResponseSchema>;

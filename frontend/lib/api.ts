@@ -3,8 +3,14 @@ import type { z } from "zod";
 import {
   type AggregateResponse,
   aggregateResponseSchema,
+  type BulkImportPreviewResponse,
+  bulkImportPreviewResponseSchema,
+  type BulkImportRequest,
+  type BulkImportResultResponse,
+  bulkImportResultResponseSchema,
   type CreateFormulaDefinitionInput,
   type CreateMetricEntryInput,
+  type CreateMetricImportSettingsInput,
   type CreateMetricThresholdInput,
   type CreateMetricTypeInput,
   currentUserSchema,
@@ -20,6 +26,9 @@ import {
   type LoginInput,
   type MetricEntry,
   metricEntrySchema,
+  type MetricImportSettings,
+  metricImportSettingsOrNullSchema,
+  metricImportSettingsSchema,
   type MetricThreshold,
   metricThresholdSchema,
   type MetricType,
@@ -198,6 +207,29 @@ export const favoriteMetrics = {
     request(favoriteMetricListSchema, "/api/metric-types/favorites/reorder/", {
       method: "PATCH",
       body: JSON.stringify({ metric_type_ids: metricTypeIds }),
+    }),
+};
+
+export const metricImportSettings = {
+  get: (metricTypeId: number): Promise<MetricImportSettings | null> =>
+    request(metricImportSettingsOrNullSchema, `/api/metric-types/${metricTypeId}/import-settings/`),
+  set: (metricTypeId: number, data: CreateMetricImportSettingsInput): Promise<MetricImportSettings> =>
+    request(metricImportSettingsSchema, `/api/metric-types/${metricTypeId}/import-settings/`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
+};
+
+export const metricBulkImport = {
+  preview: (metricTypeId: number, data: BulkImportRequest): Promise<BulkImportPreviewResponse> =>
+    request(bulkImportPreviewResponseSchema, `/api/metric-types/${metricTypeId}/import/preview/`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  run: (metricTypeId: number, data: BulkImportRequest): Promise<BulkImportResultResponse> =>
+    request(bulkImportResultResponseSchema, `/api/metric-types/${metricTypeId}/import/`, {
+      method: "POST",
+      body: JSON.stringify(data),
     }),
 };
 
