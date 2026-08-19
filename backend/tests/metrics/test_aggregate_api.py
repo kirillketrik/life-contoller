@@ -184,6 +184,47 @@ class TestAggregateEndpoint:
         assert response.status_code == status.HTTP_200_OK
         assert response.data["period_changes"]["1y"] == pytest.approx((120 - 100) / 100 * 100)
 
+    def test_current_is_latest_even_when_outside_the_selected_range(
+        self, authenticated_client, number_metric_type, regular_user
+    ):
+        baker.make(
+            MetricEntry,
+            metric_type=number_metric_type,
+            owner=regular_user,
+            value=55,
+            recorded_at=timezone.now() - timedelta(days=100),
+        )
+        # The current, real-world latest entry — deliberately outside the
+        # historical window queried below, so "current" only stays correct
+        # if it's resolved independently of the selected range.
+        baker.make(
+            MetricEntry,
+            metric_type=number_metric_type,
+            owner=regular_user,
+            value=65,
+            recorded_at=timezone.now(),
+        )
+        response = authenticated_client.get(
+            f"/api/metric-types/{number_metric_type.id}/aggregate/",
+            {
+                "timeframe_unit": "day",
+                "timeframe_count": 1,
+                "start": (timezone.now() - timedelta(days=105)).isoformat(),
+                "end": (timezone.now() - timedelta(days=95)).isoformat(),
+            },
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["summary"]["count"] == 1  # only the 100-day-old entry is in range
+        assert response.data["current"] == 65
+
+    def test_current_is_null_with_no_entries(self, authenticated_client, number_metric_type):
+        response = authenticated_client.get(
+            f"/api/metric-types/{number_metric_type.id}/aggregate/",
+            {"timeframe_unit": "day", "timeframe_count": 1},
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["current"] is None
+
     def test_invalid_timeframe_unit_is_rejected(self, authenticated_client, number_metric_type):
         response = authenticated_client.get(
             f"/api/metric-types/{number_metric_type.id}/aggregate/",

@@ -142,22 +142,57 @@ class MetricThreshold(models.Model):
         return f"{self.metric_type.name} threshold for {self.user}"
 
 
-class FavoriteMetric(models.Model):
-    """A user's favorited metric type, shown on their personal dashboard.
+class DashboardTimeframe(models.TextChoices):
+    WEEK = "7d", "7 days"
+    MONTH = "30d", "30 days"
+    QUARTER = "90d", "90 days"
+    YEAR = "1y", "1 year"
+    THREE_YEARS = "3y", "3 years"
+    ALL = "all", "All time"
+    CUSTOM = "custom", "Custom"
 
-    Per-user, not global — favoriting is a personal preference, scoped like
-    `MetricThreshold`, not a shared/admin-defined resource like `MetricType`
-    itself. `order` supports user-controlled ordering of the dashboard's
-    favorites section (defaults to 0 for every new favorite, so insertion
-    order — via `created_at` — is the tie-breaker until explicitly reordered).
+
+class DashboardElement(models.Model):
+    """Per-user, per-metric-type configuration of what's shown on the user's
+    dashboard for that metric — replaces the old boolean `FavoriteMetric`.
+
+    Elements a metric can show (chart / current / max / min / avg) are all
+    configured together as one row, from the metric's own detail page, and
+    rendered together as one block on the dashboard — not one row/card per
+    element. `timeframe` governs both the chart's visible range and what
+    feeds the max/min/avg calculation (the same resolved range); `current`
+    is deliberately exempt — it's always the single latest entry, never
+    filtered by `timeframe`. `timeframe` reuses the same preset vocabulary
+    as the metric detail page's chart control (`aggregation.NAMED_RANGE_PRESETS`
+    / frontend `RANGE_PRESETS`) plus `custom`, rather than a second,
+    incompatible timeframe representation.
+
+    One row per (user, metric_type), not one row per element — enabling/
+    disabling elements or changing the timeframe updates this same row.
+    Disabling every element is not persisted as an all-false row; the
+    dashboard-element action's DELETE method is the only way to remove a
+    metric from the dashboard (see `apps.metrics.views`).
     """
 
     user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="favorite_metrics"
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="dashboard_elements"
     )
     metric_type = models.ForeignKey(
-        MetricType, on_delete=models.CASCADE, related_name="favorited_by"
+        MetricType, on_delete=models.CASCADE, related_name="dashboard_elements"
     )
+
+    show_chart = models.BooleanField(default=False)
+    show_current = models.BooleanField(default=False)
+    show_max = models.BooleanField(default=False)
+    show_min = models.BooleanField(default=False)
+    show_avg = models.BooleanField(default=False)
+
+    timeframe = models.CharField(
+        max_length=20, choices=DashboardTimeframe.choices, default=DashboardTimeframe.MONTH
+    )
+    custom_range_start = models.DateField(null=True, blank=True)
+    custom_range_end = models.DateField(null=True, blank=True)
+
     order = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -165,12 +200,12 @@ class FavoriteMetric(models.Model):
         ordering = ["order", "created_at"]
         constraints = [
             models.UniqueConstraint(
-                fields=["user", "metric_type"], name="unique_favorite_metric_per_user"
+                fields=["user", "metric_type"], name="unique_dashboard_element_per_user"
             ),
         ]
 
     def __str__(self) -> str:
-        return f"{self.metric_type.name} favorited by {self.user}"
+        return f"{self.metric_type.name} dashboard element for {self.user}"
 
 
 class MetricImportSettings(models.Model):

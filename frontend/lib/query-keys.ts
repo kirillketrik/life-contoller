@@ -22,7 +22,7 @@ export const FORMULA_DEFINITIONS_QUERY_KEY = ["formula-definitions"] as const;
 
 export const DASHBOARD_SUMMARY_QUERY_KEY = ["dashboard-summary"] as const;
 
-export const FAVORITE_METRICS_QUERY_KEY = ["favorite-metrics"] as const;
+export const DASHBOARD_ELEMENTS_QUERY_KEY = ["dashboard-elements"] as const;
 
 export const metricImportSettingsQueryKey = (metricTypeId: number) =>
   ["metric-import-settings", metricTypeId] as const;

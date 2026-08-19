@@ -147,6 +147,7 @@ export const aggregateResponseSchema = z.object({
   range_end: z.string(),
   timeframe_unit: timeframeUnitSchema,
   timeframe_count: z.number(),
+  current: z.number().nullable(),
   buckets: z.array(ohlcBucketSchema),
   summary: rangeSummarySchema,
   time_in_range_percent: z.number().nullable(),
@@ -283,18 +284,70 @@ export const dashboardSummarySchema = z.object({
 });
 export type DashboardSummary = z.infer<typeof dashboardSummarySchema>;
 
-export const favoriteMetricSchema = z.object({
+export const dashboardElementTimeframeSchema = z.enum([
+  "7d",
+  "30d",
+  "90d",
+  "1y",
+  "3y",
+  "all",
+  "custom",
+]);
+export type DashboardElementTimeframe = z.infer<typeof dashboardElementTimeframeSchema>;
+
+export const dashboardElementSchema = z.object({
   id: z.number(),
   order: z.number(),
   metric_type: metricTypeSchema,
-  timeframe_unit: timeframeUnitSchema,
+  show_chart: z.boolean(),
+  show_current: z.boolean(),
+  show_max: z.boolean(),
+  show_min: z.boolean(),
+  show_avg: z.boolean(),
+  timeframe: dashboardElementTimeframeSchema,
+  custom_range_start: z.string().nullable(),
+  custom_range_end: z.string().nullable(),
+  current: z.number().nullable(),
+  max: z.number().nullable(),
+  min: z.number().nullable(),
+  avg: z.number().nullable(),
   buckets: z.array(ohlcBucketSchema),
-  summary: rangeSummarySchema,
+  timeframe_unit: timeframeUnitSchema.nullable(),
   period_changes: periodChangesSchema,
 });
-export type FavoriteMetric = z.infer<typeof favoriteMetricSchema>;
+export type DashboardElement = z.infer<typeof dashboardElementSchema>;
 
-export const favoriteMetricListSchema = z.array(favoriteMetricSchema);
+export const dashboardElementListSchema = z.array(dashboardElementSchema);
+
+export const dashboardElementInputSchema = z
+  .object({
+    show_chart: z.boolean(),
+    show_current: z.boolean(),
+    show_max: z.boolean(),
+    show_min: z.boolean(),
+    show_avg: z.boolean(),
+    timeframe: dashboardElementTimeframeSchema,
+    custom_range_start: z.string().nullable(),
+    custom_range_end: z.string().nullable(),
+  })
+  .refine(
+    (data) => data.show_chart || data.show_current || data.show_max || data.show_min || data.show_avg,
+    { message: "Enable at least one element", path: ["show_chart"] },
+  )
+  .refine(
+    (data) =>
+      data.timeframe !== "custom" || (data.custom_range_start !== null && data.custom_range_end !== null),
+    { message: "A custom timeframe needs both start and end dates", path: ["custom_range_start"] },
+  )
+  .refine(
+    (data) =>
+      data.timeframe !== "custom" ||
+      data.custom_range_start === null ||
+      data.custom_range_end === null ||
+      data.custom_range_start <= data.custom_range_end,
+    { message: "Start date must not be after end date", path: ["custom_range_start"] },
+  );
+export type DashboardElementInput = z.infer<typeof dashboardElementInputSchema>;
 
 export const metricImportSettingsSchema = z.object({
   id: z.number(),

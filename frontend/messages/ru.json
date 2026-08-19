@@ -33,9 +33,9 @@
     "breakdownTitle": "Записи по типу метрики",
     "trendTitle": "Активность за последние 12 месяцев",
     "noData": "Пока нет данных.",
-    "favoritesTitle": "Избранное",
-    "favoritesEmpty": "Добавьте графики в избранное на странице метрики, чтобы видеть их здесь.",
-    "favoritesMore": "Показаны {shown} из {total} избранных графиков."
+    "elementsTitle": "Дашборд",
+    "elementsEmpty": "Настройте отображение метрики на странице этой метрики, чтобы видеть блок здесь.",
+    "elementsMore": "Показано {shown} из {total} блоков."
   },
   "login": {
     "title": "Вход",
@@ -148,10 +148,13 @@
     "range1y": "1 год",
     "range3y": "3 года",
     "rangeAll": "Всё время",
+    "rangeCustom": "Свой диапазон",
+    "statCurrent": "Текущее",
     "statMin": "Мин.",
     "statMax": "Макс.",
     "statAvg": "Среднее",
-    "statTimeInRange": "Время в диапазоне"
+    "statTimeInRange": "Время в диапазоне",
+    "configureLink": "Настроить блок"
   },
   "metricChart": {
     "noData": "Нет данных за этот период."
@@ -163,10 +166,30 @@
     "3m": "3мес",
     "1y": "1г"
   },
-  "favorites": {
-    "add": "Добавить в избранное",
-    "remove": "Убрать из избранного",
-    "toggleFailed": "Не удалось обновить избранное"
+  "dashboardElement": {
+    "configure": "Настроить",
+    "title": "Дашборд: {name}",
+    "description": "Выберите, какие элементы показывать на дашборде для этой метрики, и за какой период.",
+    "elementChart": "График",
+    "elementCurrent": "Текущее значение",
+    "elementMax": "Максимум",
+    "elementMin": "Минимум",
+    "elementAvg": "Среднее",
+    "timeframeLabel": "Период",
+    "customRangeStart": "Начало периода",
+    "customRangeEnd": "Конец периода",
+    "save": "Сохранить",
+    "saving": "Сохранение...",
+    "saved": "Настройки дашборда сохранены",
+    "saveFailed": "Не удалось сохранить настройки дашборда",
+    "remove": "Убрать с дашборда",
+    "removing": "Удаление...",
+    "removed": "Метрика убрана с дашборда",
+    "removeFailed": "Не удалось убрать метрику с дашборда",
+    "removeConfirmTitle": "Убрать с дашборда?",
+    "removeConfirmDescription": "Блок этой метрики больше не будет показываться на дашборде. Настройки можно будет задать заново в любой момент.",
+    "removeConfirmAction": "Убрать",
+    "removeCancel": "Отмена"
   },
   "formulas": {
     "title": "Формулы",

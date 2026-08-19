@@ -11,7 +11,7 @@ applies (see `apps.metrics.selectors.points_for_metric_type`).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from enum import Enum
 
 from dateutil.relativedelta import relativedelta
@@ -163,6 +163,67 @@ def time_in_range_percent(
         and (upper_bound is None or point.value <= upper_bound)
     )
     return (in_range / len(points)) * 100
+
+
+@dataclass(frozen=True)
+class NamedRangePreset:
+    """One entry of the shared timeframe-preset vocabulary used both by the
+    ad hoc `/aggregate/` query params (built from these on the frontend, see
+    `lib/metric-range-presets.ts`'s `RANGE_PRESETS`) and by a persisted
+    `DashboardElement.timeframe` choice — one representation, not two."""
+
+    length: timedelta | relativedelta
+    bucket: Timeframe
+
+
+NAMED_RANGE_PRESETS: dict[str, NamedRangePreset] = {
+    "7d": NamedRangePreset(timedelta(days=7), Timeframe(TimeframeUnit.HOUR, 6)),
+    "30d": NamedRangePreset(timedelta(days=30), Timeframe(TimeframeUnit.DAY, 1)),
+    "90d": NamedRangePreset(timedelta(days=90), Timeframe(TimeframeUnit.DAY, 1)),
+    "1y": NamedRangePreset(relativedelta(years=1), Timeframe(TimeframeUnit.WEEK, 1)),
+    "3y": NamedRangePreset(relativedelta(years=3), Timeframe(TimeframeUnit.MONTH, 1)),
+    # Same "100 years back" stand-in for "unbounded" as PERIOD_CHANGE_LOOKBACK
+    # and the frontend's own "Всё время" preset — not truly unbounded.
+    "all": NamedRangePreset(relativedelta(years=100), Timeframe(TimeframeUnit.MONTH, 1)),
+}
+
+
+def _bucket_for_span_days(span_days: float) -> Timeframe:
+    """Bucket granularity for a custom range, chosen by span using the same
+    breakpoints `NAMED_RANGE_PRESETS` already encodes for the fixed presets."""
+    if span_days <= 7:
+        return Timeframe(TimeframeUnit.HOUR, 6)
+    if span_days <= 90:
+        return Timeframe(TimeframeUnit.DAY, 1)
+    if span_days <= 365:
+        return Timeframe(TimeframeUnit.WEEK, 1)
+    return Timeframe(TimeframeUnit.MONTH, 1)
+
+
+def resolve_named_range(
+    key: str,
+    *,
+    at: datetime,
+    custom_start: date | None = None,
+    custom_end: date | None = None,
+) -> tuple[datetime, datetime, Timeframe]:
+    """Resolves a named timeframe key (a `NAMED_RANGE_PRESETS` key, or
+    `"custom"`) into a concrete `(range_start, range_end, bucket)` tuple for
+    a `DashboardElement`'s stored `timeframe` — the same resolved range then
+    feeds both the chart buckets and the max/min/avg calculation, per that
+    model's contract."""
+    if key == "custom":
+        if custom_start is None or custom_end is None:
+            raise ValueError("custom_start and custom_end are required for a custom range.")
+        range_start = datetime.combine(custom_start, time.min, tzinfo=at.tzinfo)
+        range_end = datetime.combine(custom_end, time.max, tzinfo=at.tzinfo)
+        span_days = (range_end - range_start).total_seconds() / 86400
+        return range_start, range_end, _bucket_for_span_days(span_days)
+
+    preset = NAMED_RANGE_PRESETS.get(key)
+    if preset is None:
+        raise ValueError(f"Unknown named range: {key}")
+    return at - preset.length, at, preset.bucket
 
 
 def period_percent_changes(

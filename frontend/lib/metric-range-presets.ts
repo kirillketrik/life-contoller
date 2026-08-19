@@ -14,7 +14,7 @@ export const DEFAULT_RANGE_KEY = "30d";
  * Preset ranges only — no raw bucket-unit/count controls. Bucket granularity
  * is picked per range so the chart stays readable (e.g. a 3-year range in
  * daily buckets would be ~1000 candles), not exposed as a separate choice.
- * Shared by the metric detail page and every favorite chart card so both
+ * Shared by the metric detail page and the dashboard-element config picker so both
  * pickers stay in sync.
  */
 export const RANGE_PRESETS: RangePreset[] = [

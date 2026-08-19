@@ -74,7 +74,7 @@ Today's rules, all in `apps/metrics/permissions.py`:
 | `MetricEntry` (`MetricEntryPermission`, **ownership**) | own entries only (no admin override — same as thresholds) | any authenticated user, for their own entries only (no admin override) |
 | `MetricThreshold` (`MetricThresholdPermission`, **ownership**) | own thresholds only | any authenticated user, for their own thresholds only (no admin override — thresholds are a personal preference) |
 | `FormulaDefinition` (`FormulaDefinitionPermission`, role-gated via `PermissionService`) | admins only | admins only |
-| `FavoriteMetric` (**ownership** — exposed as actions on `MetricTypeViewSet`, not a separate permission class; see "Favorite metrics" below) | own favorites only | any authenticated user, for their own favorites only |
+| `DashboardElement` (**ownership** — exposed as actions on `MetricTypeViewSet`, not a separate permission class; see "Dashboard elements" below) | own dashboard elements only | any authenticated user, for their own dashboard elements only |
 | `MetricImportSettings` / bulk import (**ownership** — exposed as actions on `MetricTypeViewSet`; see "Bulk metric-entry import" below) | own saved template only | any authenticated user, for their own data — bulk import is just repeated `MetricEntry` creation |
 
 The important asymmetry: **defining** a metric type is an admin action (it's shared, global
@@ -116,69 +116,91 @@ types (weight, blood sugar, insulin dose, water intake, etc. are all just data).
   fit "one value + optional metadata at a point in time" (e.g. multi-line finance transactions
   later on).
 
-### Favorite metrics (dashboard)
-`FavoriteMetric` is a per-user through-model (`user`, `metric_type`, `order`, unique per
-user+metric type) letting a user pin a metric's chart to their dashboard — per-user, not global,
-same as `MetricThreshold`; favoriting a metric never affects what other users see.
+### Dashboard elements
+`DashboardElement` is a per-user, per-metric-type through-model (`user`, `metric_type`, five
+`show_chart`/`show_current`/`show_max`/`show_min`/`show_avg` booleans, `timeframe`,
+`custom_range_start`/`custom_range_end`, `order`, unique per user+metric type) letting a user
+choose which elements — chart, and/or current/max/min/avg — to show for a metric on their
+dashboard, and over what timeframe, all configured together as one row/block rather than a
+boolean favorite. Replaces the earlier boolean `FavoriteMetric` entirely (migration `0011`
+converts any pre-existing favorite into `show_chart=True, timeframe="all"`, carrying over
+`order`) — per-user, not global, same as `MetricThreshold`; configuring a metric's dashboard
+elements never affects what other users see.
 
-- Exposed as **actions on `MetricTypeViewSet`** (`apps/metrics/views.py`), not a separate
-  viewset/router entry, since favoriting only ever makes sense in the context of a metric type:
-  `POST`/`DELETE /api/metric-types/<id>/favorite/` (idempotent toggle), `GET
-  /api/metric-types/favorites/` (the current user's favorites, each pre-bucketed with a recent
-  series — see below), `PATCH /api/metric-types/favorites/reorder/` (persists a new `order` for
-  an exact-match set of the user's own favorite metric-type ids).
+- **Timeframe governs both the chart's visible range and what feeds max/min/avg** — the same
+  resolved range, not two separate settings. `current` is deliberately exempt: always the single
+  latest recorded entry, never filtered by `timeframe`, even if that entry falls outside the
+  selected range (`selectors.current_value_for_metric_type`). `timeframe` reuses the exact same
+  6-preset vocabulary as the metric detail page's existing chart control (`7d`/`30d`/`90d`/`1y`/
+  `3y`/`all` — `aggregation.NAMED_RANGE_PRESETS`, mirroring frontend `RANGE_PRESETS` 1:1) plus a
+  `custom` option (`custom_range_start`/`custom_range_end`) — deliberately not a second,
+  incompatible timeframe representation. `aggregation.resolve_named_range(key, at=, custom_start=,
+  custom_end=)` resolves a key into a concrete `(range_start, range_end, bucket)` tuple; a custom
+  range picks its bucket granularity by span using the same breakpoints the fixed presets encode.
+- Works for computed metric types (BMI, TDEE, ...) with **no special-casing**: `current` evaluates
+  the formula at "now" (`formula_engine.evaluate_formula`), and chart/max/min/avg reuse
+  `points_for_metric_type` exactly like a regular metric type. This is also why max/min/avg stay
+  **Python-side** via the existing ORM-free `aggregation.summarize()` rather than a DB-side
+  `.aggregate()` — a computed metric's series only exists as Python-evaluated points, never DB
+  rows, so a DB-aggregation path would need a second code path for computed metrics, defeating the
+  "same code either way" rule the rest of this layer follows.
+- **Exposed as an action on `MetricTypeViewSet`** (`apps/metrics/views.py`) for the per-metric
+  config, same "personal action lives as an action on this viewset" pattern as the old favorites:
+  `POST`/`PATCH /api/metric-types/<id>/dashboard-element/` (upsert — create on first save, update
+  on every save after; returns the saved config plus its resolved stats), `DELETE` (idempotent
+  removal — a no-op, not an error, when none exists). Two **top-level** endpoints (not
+  `MetricTypeViewSet` actions, since they span every configured metric type, not one):
+  `GET /api/dashboard-elements/` (every configured element for the requesting user, each with its
+  resolved stats — one request for the whole dashboard, not one `/aggregate/`-style request per
+  block) and `PATCH /api/dashboard-elements/reorder/` (persists a new `order` for an exact-match
+  set of the user's own dashboard-element metric-type ids, same validate-then-reassign shape the
+  old favorites reorder endpoint had).
+- **At least one `show_*` flag is required to save** (`DashboardElementInputSerializer.validate`,
+  same "at least one" rule as `MetricThresholdSerializer`'s bounds check) — disabling every element
+  is not an implicit side effect of saving an all-false row; the DELETE method above is the only
+  way to remove a metric from the dashboard. `timeframe="custom"` requires both range dates set,
+  with start not after end.
 - **Ownership, not role-gated**, despite living on `MetricTypeViewSet` (whose CRUD actions *are*
   role-gated via `MetricTypePermission`): `get_permissions()` overrides to plain `IsAuthenticated`
-  for the three favorite-related actions, and every query is scoped to `request.user` directly in
-  the view — no object-level permission check needed, since a favorite's identity in the URL is
-  always the *metric type* id, never the favorite row's own id, so there's no cross-user object to
-  leak. Same reasoning as `MetricEntry`/`MetricThreshold`: personal action, not shared config.
-- `GET /favorites/` returns each favorite with its metric type plus a pre-bucketed ~30-day daily
-  series (`selectors.favorites_chart_data_for_user`, reusing `points_for_metric_type`/`bucketize`/
-  `summarize` — same "aggregate once" building blocks as `/aggregate/`) so the dashboard renders
-  every favorite chart card from this one response, instead of one `/aggregate/` request per card.
-  Works for computed metric types too (BMI, TDEE, ...), same as `/aggregate/`. A favorited
-  non-chartable metric type (`text`/`boolean`/`date` — the UI never offers this, but the API
-  doesn't block it) degrades to an empty series rather than erroring the whole list.
-- **Reordering**: the backend endpoint is implemented and tested, but the frontend doesn't call it
-  yet — drag-and-drop reordering was scoped as a nice-to-have, not required for v1 (see
-  `frontend/components/metrics/favorite-toggle.tsx`/`app/[locale]/page.tsx`). Favorites currently
-  display in `order`/`created_at` order (insertion order, since every new favorite defaults to
-  `order=0`). Follow-up if/when it's worth the drag-and-drop UI work.
-- Frontend: `useIsFavoriteMetric`/`FavoriteToggleButton` (`components/metrics/favorite-toggle.tsx`)
-  is the single place that calls the favorite/unfavorite endpoints — an optimistic local toggle
-  (not a cache-level optimistic update, since a newly favorited item has no chart data client-side
-  to fabricate) that rolls back on error, matching the "keep favorite-toggling logic in a hook
-  layer" convention. Rendered on `MetricDashboard` (metric detail page) and on each
-  `FavoriteMetricCard` (dashboard's favorites section, `components/dashboard/favorite-metric-card.tsx`)
-  — both read/write the same `FAVORITE_METRICS_QUERY_KEY`, so toggling in either place stays in
-  sync. The dashboard favorites section reuses the existing `ChartCard` wrapper (extended with an
-  optional `action` slot for the toggle button) and `MetricChart` — no second chart component —
-  and caps display at 8 cards, showing a "N of M" note rather than a dedicated favorites page if
-  there are more (the metric detail page is still reachable for every metric, favorited or not).
-- **Per-card timeframe selector**: each `FavoriteMetricCard` has its own `RangeSelect`
-  (`components/metrics/range-select.tsx`, sharing `RANGE_PRESETS` from
-  `frontend/lib/metric-range-presets.ts` with the metric detail page's dashboard) — picking a
-  range other than the default 30 days switches that one card to `useMetricAggregate`
-  (`components/metrics/use-metric-aggregate.ts`, a thin `useQuery` wrapper around
-  `GET /aggregate/`) instead of the list response's pre-bucketed series, so the default render for
-  every card still costs one `/favorites/` call and a non-default range only re-fetches the card
-  the user actually touched. `MetricDashboard` (metric detail page) was refactored to the same
-  shared hook/preset list — it's now a presentational component that takes `rangeKey`/`data`/
-  `isLoading` as props instead of owning its own query, so the page can fetch once and also read
-  `period_changes` off the same response for the header badges below.
-- **Period-change badges**: `PeriodChangeBadges` (`components/metrics/period-change-badges.tsx`)
-  renders the 24h/7d/30d/3m/1y `%` change next to a metric's name — green/red via new `--success`/
-  `--destructive` CSS tokens (`app/globals.css`), `—` for a period with no data far enough back to
-  compare against. Shown in `ChartCard`'s new optional `titleExtra` slot for favorite cards (next
-  to the metric name, which *is* the card title there) and next to the `<h1>` on the metric detail
-  page. Backed by `selectors.period_changes_for_metric_type` (`apps/metrics/selectors.py`) +
-  `aggregation.period_percent_changes`: % change between the latest value at/before "now" and the
-  latest value at/before each lookback target, `None` when either side has no data — deliberately
-  its own up-to-a-year lookback query, independent of whatever display range a chart happens to be
-  showing, since a "24h ago" comparison must stay pinned to 24h regardless of the selected
-  timeframe. Included in both `GET /aggregate/`'s and `GET /favorites/`'s response bodies as
-  `period_changes` (always computed "as of now", not re-derived per selected range).
+  for the `dashboard_element` action, and every query is scoped to `request.user` directly in the
+  view/selectors — no object-level permission check needed, since a config's identity in the URL
+  is always the *metric type* id, never the row's own id. Same reasoning as
+  `MetricEntry`/`MetricThreshold`: personal action, not shared config.
+- `selectors.dashboard_element_stats`/`dashboard_element_data`/`dashboard_elements_data_for_user`
+  are the one place this resolution logic lives, called both by the batched list endpoint (looped,
+  one call per element) and by the single-metric write action (to return the freshly saved
+  element's stats) — "one aggregation function, called per-metric there and in a loop here," not
+  duplicated. `GET /aggregate/` (the metric detail page's existing chart endpoint) also gained a
+  `current` field via the same `current_value_for_metric_type` selector, rather than a new,
+  largely-overlapping `/stats/`-style endpoint — the detail page's timeframe control already drove
+  everything else this needed (chart/summary/time-in-range/period-changes) through that one call.
+- Frontend: `useDashboardElementConfig`/`DashboardElementConfigDialog`
+  (`components/metrics/dashboard-element-config.tsx`) is the single place that reads/writes a
+  metric's dashboard config — the hook derives the current config from the batched
+  `DASHBOARD_ELEMENTS_QUERY_KEY` list query (same "derive from the list, no dedicated GET-by-id
+  endpoint" approach the old `useIsFavoriteMetric` used), and the dialog is a `Switch`-per-element
+  picker (matching the `is_computed`/`is_singleton` toggle pattern already used on
+  `create-metric-type-dialog.tsx`) plus a timeframe `Select` with an added "Свой диапазон" (custom)
+  option and, only then, two `type="date"` inputs. A destructive-confirm `AlertDialog` guards the
+  "Убрать с дашборда" (remove) action, matching `DeleteMetricEntryButton`'s confirm-before-delete
+  pattern. Rendered as a trigger button next to the title on `MetricDashboard` (metric detail
+  page) — configuration only ever happens from a metric's own detail page, never from the
+  dashboard itself. `components/dashboard/dashboard-element-card.tsx`'s `DashboardElementCard` is
+  the read-only dashboard block: reuses the existing `ChartCard` wrapper and `MetricChart`, shows
+  only the enabled among current/max/min/avg via a new shared `components/metrics/summary-stat.tsx`
+  (extracted so the detail page's own stat tiles and every dashboard block render identically), and
+  its `action` slot is a small gear-icon link back to the metric's detail page (no inline timeframe
+  control on the dashboard block itself — timeframe is configured on the detail page only, per the
+  model above). Dashboard caps display at 8 blocks with a "N of M" note, same convention as before.
+  **Known Base UI quirk**: a shadcn `Button` combined with `render={<Link .../>}` needs
+  `nativeButton={false}` explicitly — without it, Base UI logs a console warning (and degrades
+  semantics) because it expects `render`'s output to be an actual `<button>` element, not an `<a>`.
+- **Period-change badges**: unchanged in shape from before — `PeriodChangeBadges`
+  (`components/metrics/period-change-badges.tsx`) still renders the 24h/7d/30d/3m/1y `%` change via
+  `--success`/`--destructive` tokens, shown in `ChartCard`'s `titleExtra` slot for each dashboard
+  block and next to the `<h1>` on the metric detail page, backed by the same
+  `selectors.period_changes_for_metric_type`. Included in both `GET /aggregate/`'s and
+  `GET /dashboard-elements/`'s response bodies as `period_changes`.
 
 ### Bulk metric-entry import
 Lets a user paste or upload many `MetricEntry` rows at once for a single metric type, using a
@@ -197,7 +219,7 @@ per line, split positionally into `{value}` and `{date}` tokens by a user-built
   "date;value" export for one metric, "value date" pasted from somewhere else for another).
   Exposed as an ownership-scoped `GET`/`PUT /api/metric-types/<id>/import-settings/` action pair on
   `MetricTypeViewSet` (same "personal action lives as an action on this viewset" pattern as
-  favorites) — `GET` returns `null` rather than `404` when unset, so the frontend always gets a
+  dashboard elements) — `GET` returns `null` rather than `404` when unset, so the frontend always gets a
   200 and just checks for `null` to decide whether to pre-fill the builder or start empty.
 - **Client/server parsing split**: `frontend/lib/metric-bulk-parse.ts` (`parseImportTemplate`,
   `parseImportText`) only does the positional *splitting* — template validation (separator
@@ -224,8 +246,8 @@ per line, split positionally into `{value}` and `{date}` tokens by a user-built
   delete+recreate), `duplicate_skip`/`invalid` rows are left untouched — partial success, a bad or
   duplicate row never blocks the rest of the batch, same rule as the reference's bulk-asset-create.
 - Two `MetricTypeViewSet` actions, both ownership-scoped (`IsAuthenticated`, queries scoped to
-  `request.user`) via the same `get_permissions()` override that already carves out the favorite
-  actions: `POST /api/metric-types/<id>/import/preview/` resolves and returns per-row status
+  `request.user`) via the same `get_permissions()` override that already carves out the
+  dashboard-element action: `POST /api/metric-types/<id>/import/preview/` resolves and returns per-row status
   without persisting; `POST /api/metric-types/<id>/import/` resolves *and* persists, returning
   `created_count`/`updated_count`/`skipped_count`/`invalid_count` plus the same per-item list.
   Both take the same body shape (`items`, `date_format`, `decimal_separator`, `duplicate_policy`).
@@ -563,7 +585,7 @@ life-controller/
 │   │   │   ├── serializers.py
 │   │   │   ├── views.py           # LoginView / LogoutView / MeView
 │   │   │   └── urls.py
-│   │   └── metrics/               # MetricType(+Choice) / MetricEntry / MetricThreshold / FormulaDefinition / FavoriteMetric / MetricImportSettings
+│   │   └── metrics/               # MetricType(+Choice) / MetricEntry / MetricThreshold / FormulaDefinition / DashboardElement / MetricImportSettings
 │   │       ├── models.py
 │   │       ├── selectors.py       # all read-query logic for this app
 │   │       ├── services.py        # write-side logic beyond a serializer's create/update (nested MetricType+choices writes)
@@ -615,14 +637,15 @@ life-controller/
     │   │   └── app-sidebar.tsx      # fixed sidebar: nav groups, admin gating, user footer menu
     │   ├── dashboard/
     │   │   ├── chart-card.tsx              # icon+title Card wrapper used by every dashboard card
-    │   │   ├── favorite-metric-card.tsx    # ChartCard + MetricChart for one favorited metric
+    │   │   ├── dashboard-element-card.tsx  # ChartCard + MetricChart + stats for one configured metric
     │   │   ├── horizontal-bar-list.tsx     # categorical breakdowns (no time axis — not a chart lib)
     │   │   └── monthly-trend-chart.tsx     # lightweight-charts area series for the 12-month trend
     │   ├── metrics/                 # feature components
     │   │   ├── metric-chart.tsx             # lightweight-charts candlestick/line wrapper
     │   │   ├── metric-dashboard.tsx         # timeframe selector + chart + summary stats
+    │   │   ├── summary-stat.tsx             # shared current/min/max/avg stat tile
     │   │   ├── threshold-config.tsx         # per-user threshold dialog + useMetricThreshold hook
-    │   │   ├── favorite-toggle.tsx          # star toggle button + useIsFavoriteMetric hook
+    │   │   ├── dashboard-element-config.tsx # element picker dialog + useDashboardElementConfig hook
     │   │   ├── metric-entry-dialog.tsx      # create AND edit (pass `entry`) — one form, value-type branching
     │   │   ├── delete-metric-entry-button.tsx     # icon button + AlertDialog confirm, per entry row
     │   │   ├── create-metric-type-dialog.tsx      # incl. the choice-option row editor and is_singleton switch
@@ -713,6 +736,7 @@ Installing a new package or shadcn component works the same way, e.g.
 | `MetricEntry` admin-widening removed: `metric_entry_list_for_user` used to widen reads to every user's entries for an admin, and `MetricEntryPermission.has_object_permission` let an admin edit/delete anyone's entry — both were a pre-existing inconsistency with the "MetricEntry is ownership-based, not admin-gated" rule already stated at the bottom of this file, and surfaced as a real, confusing symptom: on a metric's detail page, the entries table (widened for admins) showed rows the chart above it (always scoped to the logged-in user only, per "Timeframe aggregation" above) correctly excluded, reading as "the chart is silently dropping data" with two admin accounts logging the same metric type. Considered adding an Owner column to the table first (smallest change, keeps both scoping rules) but landed on the larger fix instead: `metric_entry_list_for_user` and `MetricEntryPermission.has_object_permission` are now both plain ownership, no admin override, matching `MetricThreshold` exactly — an admin sees/manages only their own entries everywhere, same as everyone else | `feature/bulk-metric-import` | Fixed, manually verified via browser (metric detail page's entries table now shows only the logged-in user's own rows, matching the chart above it); backend: 173/173 tests passing incl. `test_admin_cannot_edit_others_entry`/`test_admin_only_sees_own_entries` replacing the old admin-widening assertions, `ruff check .` clean; frontend: `eslint`/`tsc` clean. **Dev-loop note**: mid-investigation, an unrelated frontend edit didn't show up despite no compile errors in `docker compose logs frontend` — HMR reported "connected" but Turbopack never recompiled the route (confirmed by fetching the served JS chunks directly and finding the new code genuinely absent). A `docker compose restart frontend` fixed it; worth trying first if a change silently doesn't apply |
 | Per-card timeframe selector on favorite dashboard charts + 24h/7d/30d/3m/1y period-change badges (`selectors.period_changes_for_metric_type`/`aggregation.period_percent_changes`, new `period_changes` field on both `GET /aggregate/` and `GET /favorites/`; frontend `RangeSelect`/`useMetricAggregate`/`RANGE_PRESETS` extracted so the metric detail page and every favorite card share one range-picker implementation instead of two; `PeriodChangeBadges` shown via `ChartCard`'s new `titleExtra` slot and next to the detail page's `<h1>`; new `--success` CSS token alongside `--destructive` for the green/red coloring) | `fix/metric-entry-ownership-scoping` | Implemented, manually verified via browser (favorites section renders correct % values/colors/`—` placeholders for both a computed metric (BMI, no data old enough → all `—`) and a regular one (Weight, real 24h/7d/30d deltas); the detail page shows the same badges next to the metric name; API responses spot-checked directly). backend: 182/182 tests passing incl. 9 new (`TestPeriodPercentChanges` in `test_aggregation.py`, `period_changes` coverage in `test_aggregate_api.py`/`test_favorites.py`), `ruff check .` clean; frontend: `eslint`/`tsc` clean. Interactive click-through of the range dropdown was confirmed working in a follow-up pass (dispatching a real pointerdown/mousedown/pointerup/mouseup/click sequence via JS gets the Base UI popover to position correctly under this session's CDP-driven browser tool — a plain synthetic click alone left it collapsed to a 0×0 box; not a code issue, just what this popover needs from the automation layer). Hit the Granian dev-loop quirk documented above mid-session — `docker compose restart backend` was needed once for edits to actually take effect |
 | Bugfix: `PERIOD_CHANGE_LOOKBACK` (`apps/metrics/selectors.py`) was `relativedelta(years=1)` — exactly equal to the longest entry in `PERIOD_CHANGE_SPECS` ("1y") — so the period-changes points query's `range_start` landed exactly on the "1 year ago" target, leaving no older points to fall back to when nothing was recorded on that exact day. Any entry older than a year (e.g. a first-ever reading logged ~2 years back, with nothing else until recently) fell entirely outside the fetch and was invisible to `value_at_or_before`, so the `1y` (and often `3m`) badge always showed "no data" even though a genuinely comparable old point existed. Fixed by widening `PERIOD_CHANGE_LOOKBACK` to `relativedelta(years=100)` — same "100 years back" stand-in for "unbounded" the frontend's `rangeAll` preset already uses (`relativeDays: 36500`) | `fix/metric-entry-ownership-scoping` | Fixed, manually verified via browser (a Weight entry ~2 years old now correctly resolves the `1y`/`3m` badges instead of showing `—`); backend: 183/183 tests passing incl. 1 new regression test (`test_period_change_finds_data_older_than_the_period_itself`), `ruff check .` clean |
+| Dashboard elements (`DashboardElement` per-user/per-metric-type model replaces boolean `FavoriteMetric` entirely, migration `0011` backfills existing favorites as `show_chart=True, timeframe="all"`; per-metric chart/current/max/min/avg toggles + independent timeframe incl. a `custom` date-range option, configured from the metric detail page via `DashboardElementConfigDialog`, not the dashboard itself; `POST`/`PATCH`/`DELETE /api/metric-types/<id>/dashboard-element/` + `GET /api/dashboard-elements/` + `PATCH /api/dashboard-elements/reorder/`; `current` is always the latest entry regardless of timeframe; works uniformly for computed metric types with no special-casing; `GET /aggregate/` gained a `current` field instead of a new overlapping endpoint; new shared `components/metrics/summary-stat.tsx` + `components/dashboard/dashboard-element-card.tsx`) | `feature/dashboard-elements` | Implemented, manually verified end-to-end via browser (configured chart+current+max for Weight, block appeared on the dashboard with only the enabled stats; switched to a custom date range and confirmed the data resolved correctly while current stayed the single latest value; verified current stays correct even when the latest entry falls outside the selected range; BMI computed metric type configured and rendered identically to a regular metric, no special-casing; unconfigured-save validation and the explicit "Убрать с дашборда" removal flow both confirmed against the DB; light/dark theme checked). Found and fixed one real bug via manual testing: a shadcn `Button` rendered as a `Link` (the dashboard block's "reconfigure" action) needs `nativeButton={false}` or Base UI logs a console warning and degrades button semantics. backend: 191/191 tests passing incl. 36 new/updated for dashboard elements and `/aggregate/`'s `current` field, `ruff check .` clean on every file this pass touched (18 pre-existing `E501` errors in untouched test files predate this branch); frontend: `eslint`/`tsc` clean. Hit both documented dev-loop quirks mid-session (stale Granian reload after a mid-edit import error, stale Turbopack HMR) — restarting the respective container fixed each |
 
 `MetricEntry` and `MetricThreshold` are **ownership-based**, not admin-gated: any authenticated
 user creates/edits/deletes their own entries and thresholds; only `MetricType` definitions and
