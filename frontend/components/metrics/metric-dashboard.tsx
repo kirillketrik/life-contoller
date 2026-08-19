@@ -43,7 +43,7 @@ export function MetricDashboard({
           <Skeleton className="h-80" />
         ) : (
           <>
-            <MetricChart buckets={data.buckets} timeframeUnit={data.timeframe_unit} />
+            <MetricChart points={data.points} timeframeUnit={data.timeframe_unit} threshold={data.threshold} />
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <SummaryStat label={t("statCurrent")} value={data.current} unit={metricType.unit} />
               <SummaryStat label={t("statMin")} value={data.summary.min} unit={metricType.unit} />

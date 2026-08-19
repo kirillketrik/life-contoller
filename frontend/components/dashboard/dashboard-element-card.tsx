@@ -18,7 +18,12 @@ import type { DashboardElement } from "@/lib/types";
  * not picked live from the dashboard. */
 export function DashboardElementCard({ element }: { element: DashboardElement }) {
   const t = useTranslations("metricDashboard");
-  const hasStats = element.show_current || element.show_max || element.show_min || element.show_avg;
+  const hasStats =
+    element.show_current ||
+    element.show_max ||
+    element.show_min ||
+    element.show_avg ||
+    element.show_time_in_range;
 
   return (
     <ChartCard
@@ -39,7 +44,11 @@ export function DashboardElementCard({ element }: { element: DashboardElement })
     >
       <div className="space-y-4">
         {element.show_chart && (
-          <MetricChart buckets={element.buckets} timeframeUnit={element.timeframe_unit ?? "day"} />
+          <MetricChart
+            points={element.points}
+            timeframeUnit={element.timeframe_unit ?? "day"}
+            threshold={element.threshold}
+          />
         )}
         {hasStats && (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -54,6 +63,9 @@ export function DashboardElementCard({ element }: { element: DashboardElement })
             )}
             {element.show_avg && (
               <SummaryStat label={t("statAvg")} value={element.avg} unit={element.metric_type.unit} />
+            )}
+            {element.show_time_in_range && (
+              <SummaryStat label={t("statTimeInRange")} value={element.time_in_range_percent} unit="%" />
             )}
           </div>
         )}

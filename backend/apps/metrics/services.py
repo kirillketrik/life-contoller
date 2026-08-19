@@ -9,14 +9,17 @@ create endpoints (one parsing/resolution path for both, see the
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime
 from typing import Any
 
 from django.db import transaction
 from django.utils import timezone
 
 from .models import MetricEntry, MetricType, MetricTypeChoice, ValueType
+
+_TIME_DIRECTIVE_RE = re.compile(r"%[HIMSp]")
 
 
 def create_metric_type_with_choices(
@@ -105,18 +108,26 @@ def _parse_bulk_value(
     return raw_value  # TEXT
 
 
-def _parse_bulk_date(raw_date: str | None, *, date_format: str) -> date | None:
+def _parse_bulk_date(raw_date: str | None, *, date_format: str) -> datetime | None:
     """Parses one row's raw `{date}` token (maps to `MetricEntry.recorded_at`)
     — `None` when the row has no date token at all (the template didn't
     include `{date}`), distinct from a present-but-unparseable token, which
-    raises `ValueError`.
+    raises `ValueError`. The date component is always required; the time
+    component is optional — `date_format` may include time directives
+    (`%H`/`%I`/`%M`/`%S`/`%p`), in which case the parsed time-of-day is used,
+    but when it doesn't, the current time of day is used instead of
+    midnight, so a date-only import doesn't silently backdate every entry to
+    00:00.
     """
     if raw_date is None or not raw_date.strip():
         return None
     try:
-        return datetime.strptime(raw_date.strip(), date_format).date()
+        parsed = datetime.strptime(raw_date.strip(), date_format)
     except ValueError as exc:
         raise ValueError("invalid_date") from exc
+    if _TIME_DIRECTIVE_RE.search(date_format):
+        return parsed
+    return datetime.combine(parsed.date(), timezone.localtime(timezone.now()).time())
 
 
 @dataclass
@@ -168,7 +179,7 @@ def resolve_bulk_import_items(
         raw_date = item.get("date")
         error_code = None
         value = None
-        parsed_date = None
+        parsed_datetime = None
         try:
             value = _parse_bulk_value(
                 metric_type, raw_value, decimal_separator=decimal_separator, date_format=date_format
@@ -176,7 +187,7 @@ def resolve_bulk_import_items(
         except ValueError as exc:
             error_code = str(exc)
         try:
-            parsed_date = _parse_bulk_date(raw_date, date_format=date_format)
+            parsed_datetime = _parse_bulk_date(raw_date, date_format=date_format)
         except ValueError as exc:
             error_code = error_code or str(exc)
         rows.append(
@@ -185,12 +196,12 @@ def resolve_bulk_import_items(
                 "raw_value": raw_value,
                 "raw_date": raw_date,
                 "value": value,
-                "date": parsed_date,
+                "date": parsed_datetime,
                 "error_code": error_code,
             }
         )
-        if parsed_date is not None:
-            dates_needed.add(parsed_date)
+        if parsed_datetime is not None:
+            dates_needed.add(parsed_datetime.date())
 
     existing_by_date: dict[date, MetricEntry] = {}
     if dates_needed:
@@ -218,11 +229,11 @@ def resolve_bulk_import_items(
             continue
 
         recorded_at = (
-            timezone.make_aware(datetime.combine(row["date"], time.min), current_tz)
+            timezone.make_aware(row["date"], current_tz)
             if row["date"] is not None
             else timezone.now()
         )
-        existing = existing_by_date.get(row["date"]) if row["date"] is not None else None
+        existing = existing_by_date.get(row["date"].date()) if row["date"] is not None else None
         if existing is not None:
             status = "duplicate_overwrite" if duplicate_policy == "overwrite" else "duplicate_skip"
             existing_entry_id = existing.id

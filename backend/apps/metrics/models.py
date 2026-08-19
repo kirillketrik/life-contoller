@@ -156,8 +156,8 @@ class DashboardElement(models.Model):
     """Per-user, per-metric-type configuration of what's shown on the user's
     dashboard for that metric — replaces the old boolean `FavoriteMetric`.
 
-    Elements a metric can show (chart / current / max / min / avg) are all
-    configured together as one row, from the metric's own detail page, and
+    Elements a metric can show (chart / current / max / min / avg / time-in-
+    range) are all configured together as one row, from the metric's own detail page, and
     rendered together as one block on the dashboard — not one row/card per
     element. `timeframe` governs both the chart's visible range and what
     feeds the max/min/avg calculation (the same resolved range); `current`
@@ -186,6 +186,7 @@ class DashboardElement(models.Model):
     show_max = models.BooleanField(default=False)
     show_min = models.BooleanField(default=False)
     show_avg = models.BooleanField(default=False)
+    show_time_in_range = models.BooleanField(default=False)
 
     timeframe = models.CharField(
         max_length=20, choices=DashboardTimeframe.choices, default=DashboardTimeframe.MONTH

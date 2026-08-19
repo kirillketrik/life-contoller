@@ -29,7 +29,12 @@ class TestAggregateEndpoint:
         )
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
-    def test_returns_buckets_and_summary(self, authenticated_client, number_metric_type, regular_user):
+    def test_returns_every_point_and_summary(
+        self, authenticated_client, number_metric_type, regular_user
+    ):
+        """The chart deliberately shows every raw entry, not one aggregated
+        value per bucket — two entries on the same day must come back as two
+        points, not collapse into a single OHLC bucket."""
         baker.make(
             MetricEntry,
             metric_type=number_metric_type,
@@ -54,12 +59,9 @@ class TestAggregateEndpoint:
             },
         )
         assert response.status_code == status.HTTP_200_OK
-        assert len(response.data["buckets"]) == 1
-        bucket = response.data["buckets"][0]
-        assert bucket["open"] == 70
-        assert bucket["close"] == 72
-        assert bucket["high"] == 72
-        assert bucket["low"] == 70
+        assert len(response.data["points"]) == 2
+        assert response.data["points"][0]["value"] == 70
+        assert response.data["points"][1]["value"] == 72
         assert response.data["summary"]["min"] == 70
         assert response.data["summary"]["max"] == 72
         assert response.data["summary"]["avg"] == 71
@@ -84,7 +86,7 @@ class TestAggregateEndpoint:
                 "end": "2026-01-02T00:00:00Z",
             },
         )
-        assert response.data["buckets"] == []
+        assert response.data["points"] == []
         assert response.data["summary"]["count"] == 0
 
     def test_time_in_range_uses_configured_threshold(
@@ -115,6 +117,16 @@ class TestAggregateEndpoint:
             },
         )
         assert response.data["time_in_range_percent"] == 50.0
+        assert response.data["threshold"] == {"lower_bound": 70, "upper_bound": 100}
+
+    def test_threshold_is_null_when_none_configured(
+        self, authenticated_client, number_metric_type
+    ):
+        response = authenticated_client.get(
+            f"/api/metric-types/{number_metric_type.id}/aggregate/",
+            {"timeframe_unit": "day", "timeframe_count": 1},
+        )
+        assert response.data["threshold"] is None
 
     def test_rejects_non_number_non_computed_metric_type(self, authenticated_client, db):
         text_type = baker.make(MetricType, value_type=ValueType.TEXT)
@@ -267,5 +279,5 @@ class TestAggregateEndpoint:
             },
         )
         assert response.status_code == status.HTTP_200_OK
-        assert len(response.data["buckets"]) == 1
-        assert response.data["buckets"][0]["close"] == pytest.approx(70 / (1.75**2))
+        assert len(response.data["points"]) == 1
+        assert response.data["points"][0]["value"] == pytest.approx(70 / (1.75**2))

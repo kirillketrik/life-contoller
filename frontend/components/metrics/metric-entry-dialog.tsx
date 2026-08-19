@@ -98,7 +98,7 @@ export function MetricEntryDialog({
     }
     const value =
       metricType.value_type === "number"
-        ? Number(values.numberValue)
+        ? Number(values.numberValue.replace(",", "."))
         : metricType.value_type === "boolean"
           ? values.booleanValue
           : metricType.value_type === "date"
@@ -138,8 +138,9 @@ export function MetricEntryDialog({
                 </Label>
                 <Input
                   id="value"
-                  type="number"
-                  step="any"
+                  type="text"
+                  inputMode="decimal"
+                  pattern="-?[0-9]*[.,]?[0-9]*"
                   value={values.numberValue}
                   onChange={(e) => setValues((v) => ({ ...v, numberValue: e.target.value }))}
                   required

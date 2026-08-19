@@ -10,6 +10,7 @@ from apps.metrics.models import (
     DashboardElement,
     FormulaDefinition,
     MetricEntry,
+    MetricThreshold,
     MetricType,
     ValueType,
 )
@@ -195,7 +196,7 @@ class TestDashboardElementList:
         assert element["min"] == 70
         assert element["avg"] == 75
 
-    def test_chart_buckets_only_present_when_show_chart_true(
+    def test_chart_points_only_present_when_show_chart_true(
         self, authenticated_client, number_metric_type, regular_user
     ):
         baker.make(
@@ -215,8 +216,100 @@ class TestDashboardElementList:
 
         response = authenticated_client.get("/api/dashboard-elements/")
         [element] = response.data
-        assert element["buckets"] == []
+        assert element["points"] == []
         assert element["max"] == 70
+
+    def test_time_in_range_only_present_when_show_time_in_range_true(
+        self, authenticated_client, number_metric_type, regular_user
+    ):
+        baker.make(
+            MetricThreshold,
+            user=regular_user,
+            metric_type=number_metric_type,
+            lower_bound=60,
+            upper_bound=90,
+        )
+        baker.make(
+            DashboardElement,
+            user=regular_user,
+            metric_type=number_metric_type,
+            show_time_in_range=True,
+            timeframe="30d",
+        )
+        baker.make(
+            MetricEntry,
+            metric_type=number_metric_type,
+            owner=regular_user,
+            value=70,
+            recorded_at=timezone.now(),
+        )
+        baker.make(
+            MetricEntry,
+            metric_type=number_metric_type,
+            owner=regular_user,
+            value=999,
+            recorded_at=timezone.now(),
+        )
+
+        response = authenticated_client.get("/api/dashboard-elements/")
+        [element] = response.data
+        assert element["time_in_range_percent"] == 50
+        assert element["threshold"] == {"lower_bound": 60, "upper_bound": 90}
+
+    def test_time_in_range_is_null_without_a_configured_threshold(
+        self, authenticated_client, number_metric_type, regular_user
+    ):
+        baker.make(
+            DashboardElement,
+            user=regular_user,
+            metric_type=number_metric_type,
+            show_time_in_range=True,
+            timeframe="30d",
+        )
+        baker.make(
+            MetricEntry,
+            metric_type=number_metric_type,
+            owner=regular_user,
+            value=70,
+            recorded_at=timezone.now(),
+        )
+
+        response = authenticated_client.get("/api/dashboard-elements/")
+        [element] = response.data
+        assert element["time_in_range_percent"] is None
+        assert element["threshold"] is None
+
+    def test_chart_includes_threshold_for_bound_lines(
+        self, authenticated_client, number_metric_type, regular_user
+    ):
+        baker.make(
+            MetricThreshold,
+            user=regular_user,
+            metric_type=number_metric_type,
+            lower_bound=60,
+            upper_bound=90,
+        )
+        baker.make(
+            DashboardElement,
+            user=regular_user,
+            metric_type=number_metric_type,
+            show_chart=True,
+            timeframe="30d",
+        )
+
+        response = authenticated_client.get("/api/dashboard-elements/")
+        [element] = response.data
+        assert element["threshold"] == {"lower_bound": 60, "upper_bound": 90}
+
+    def test_saving_show_time_in_range_only_is_accepted(
+        self, authenticated_client, number_metric_type, regular_user
+    ):
+        response = authenticated_client.patch(
+            _element_url(number_metric_type), {"show_time_in_range": True}, format="json"
+        )
+        assert response.status_code == status.HTTP_200_OK
+        element = DashboardElement.objects.get(user=regular_user, metric_type=number_metric_type)
+        assert element.show_time_in_range is True
 
     def test_custom_range_resolves_correctly(
         self, authenticated_client, number_metric_type, regular_user
@@ -289,7 +382,7 @@ class TestDashboardElementList:
         expected = 70 / (1.75**2)
         assert element["current"] == pytest.approx(expected)
         assert element["max"] == pytest.approx(expected)
-        assert len(element["buckets"]) == 1
+        assert len(element["points"]) == 1
 
     def test_element_with_no_data_degrades_gracefully(
         self, authenticated_client, number_metric_type, regular_user
@@ -312,7 +405,7 @@ class TestDashboardElementList:
         assert element["max"] is None
         assert element["min"] is None
         assert element["avg"] is None
-        assert element["buckets"] == []
+        assert element["points"] == []
 
     def test_includes_period_changes(self, authenticated_client, number_metric_type, regular_user):
         baker.make(

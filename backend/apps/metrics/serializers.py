@@ -265,6 +265,7 @@ class DashboardElementInputSerializer(serializers.Serializer):
     show_max = serializers.BooleanField(default=False)
     show_min = serializers.BooleanField(default=False)
     show_avg = serializers.BooleanField(default=False)
+    show_time_in_range = serializers.BooleanField(default=False)
     timeframe = serializers.ChoiceField(
         choices=DashboardTimeframe.choices, default=DashboardTimeframe.MONTH
     )
@@ -279,11 +280,12 @@ class DashboardElementInputSerializer(serializers.Serializer):
                 attrs["show_max"],
                 attrs["show_min"],
                 attrs["show_avg"],
+                attrs["show_time_in_range"],
             ]
         ):
             raise serializers.ValidationError(
-                "Enable at least one element (chart, current, max, min, or average) — "
-                "to remove this metric from the dashboard entirely, use DELETE instead."
+                "Enable at least one element (chart, current, max, min, average, or time in "
+                "range) — to remove this metric from the dashboard entirely, use DELETE instead."
             )
         if attrs["timeframe"] == DashboardTimeframe.CUSTOM:
             if attrs["custom_range_start"] is None or attrs["custom_range_end"] is None:
