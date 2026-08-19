@@ -6,6 +6,14 @@ import { useEffect } from "react";
 
 import { useAuth } from "@/components/auth-provider";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Link, useRouter } from "@/i18n/navigation";
@@ -68,16 +76,39 @@ export default function FormulasPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {definitions.map((definition) => (
-              <TableRow key={definition.id}>
-                <TableCell>
-                  {typesById.get(definition.computed_metric_type)?.name ?? definition.computed_metric_type}
-                </TableCell>
-                <TableCell className="max-w-[36rem] whitespace-normal break-words font-mono text-sm text-muted-foreground">
-                  {renderFormulaNodeRussian(definition.expression, typesById)}
-                </TableCell>
-              </TableRow>
-            ))}
+            {definitions.map((definition) => {
+              const computedTypeName =
+                typesById.get(definition.computed_metric_type)?.name ?? String(definition.computed_metric_type);
+              const formulaText = renderFormulaNodeRussian(definition.expression, typesById);
+              return (
+                <TableRow key={definition.id}>
+                  <TableCell>{computedTypeName}</TableCell>
+                  <TableCell className="max-w-[28rem] text-sm text-muted-foreground">
+                    <Dialog>
+                      <DialogTrigger
+                        render={
+                          <button
+                            type="button"
+                            className="block w-full truncate text-left font-mono hover:text-foreground hover:underline"
+                          />
+                        }
+                      >
+                        {formulaText}
+                      </DialogTrigger>
+                      <DialogContent className="sm:max-w-lg">
+                        <DialogHeader>
+                          <DialogTitle>{computedTypeName}</DialogTitle>
+                          <DialogDescription>{t("detailsDescription")}</DialogDescription>
+                        </DialogHeader>
+                        <p className="max-h-[60vh] overflow-y-auto rounded-lg bg-muted/50 p-3 font-mono text-sm break-words whitespace-normal text-foreground">
+                          {formulaText}
+                        </p>
+                      </DialogContent>
+                    </Dialog>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       )}
