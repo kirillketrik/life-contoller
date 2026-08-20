@@ -7,13 +7,18 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { ApiError, mealPlanEntries } from "@/lib/api";
-import { MEAL_ENTRIES_QUERY_KEY, MEAL_PLAN_ENTRIES_QUERY_KEY } from "@/lib/query-keys";
+import {
+  invalidateDailyNutritionMetricQueries,
+  MEAL_ENTRIES_QUERY_KEY,
+  MEAL_PLAN_ENTRIES_QUERY_KEY,
+} from "@/lib/query-keys";
 import type { MealPlanEntry } from "@/lib/types";
 
 /** Converts a planned meal into a real logged `MealEntry` via
  * `services.mark_meal_plan_entry_eaten` — invalidates both the plan list
- * (to flip this entry's `is_eaten`) and the meal-entries list (the food
- * diary now has a new row for whatever date this plan was for). */
+ * (to flip this entry's `is_eaten`), the meal-entries list (the food diary
+ * now has a new row for whatever date this plan was for), and the
+ * materialized daily-total metric queries the new MealEntry recomputes. */
 export function MarkMealPlanEntryEatenButton({ entry }: { entry: MealPlanEntry }) {
   const t = useTranslations("mealPlan");
   const queryClient = useQueryClient();
@@ -23,6 +28,7 @@ export function MarkMealPlanEntryEatenButton({ entry }: { entry: MealPlanEntry }
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: MEAL_PLAN_ENTRIES_QUERY_KEY });
       queryClient.invalidateQueries({ queryKey: MEAL_ENTRIES_QUERY_KEY });
+      invalidateDailyNutritionMetricQueries(queryClient);
       toast.success(t("markEatenSuccess"));
     },
     onError: (error) => {

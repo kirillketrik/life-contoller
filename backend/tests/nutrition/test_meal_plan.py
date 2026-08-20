@@ -1,4 +1,5 @@
 import pytest
+from django.utils import timezone
 from model_bakery import baker
 from rest_framework import status
 
@@ -240,6 +241,22 @@ class TestMarkEaten:
         entry = MealEntry.objects.get(id=response.data["resulting_meal_entry"])
         assert entry.recipe_id == recipe.id
         assert entry.servings == 1
+
+    def test_marking_a_plan_eaten_today_never_stamps_the_entry_in_the_future(
+        self, authenticated_client, regular_user, food_item
+    ):
+        # Same "noon can be in the future" bug as recompute_daily_nutrition_
+        # metrics — a plan dated today must produce a MealEntry (and its
+        # materialized daily total) timestamped at-or-before the actual
+        # current moment, not a fixed future noon.
+        today = timezone.now().date()
+        plan = baker.make(
+            MealPlanEntry, owner=regular_user, food_item=food_item, quantity_g=100, date=today
+        )
+        response = authenticated_client.post(f"/api/meal-plan-entries/{plan.id}/mark-eaten/")
+        entry = MealEntry.objects.get(id=response.data["resulting_meal_entry"])
+        assert entry.datetime.date() == today
+        assert entry.datetime <= timezone.now()
 
 
 class TestDuplicateDay:

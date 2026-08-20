@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 import pytest
+from django.utils import timezone
 from model_bakery import baker
 from rest_framework import status
 
@@ -241,3 +242,28 @@ class TestDailyNutritionMaterialization:
             },
         )
         assert response.status_code == status.HTTP_201_CREATED
+
+    def test_todays_materialized_entry_is_never_stamped_in_the_future(
+        self, authenticated_client, food_item, daily_nutrition_metric_types, regular_user
+    ):
+        # A fixed noon-of-the-day timestamp would land in the future whenever
+        # the entry is logged before noon UTC — invisible to
+        # current_value_for_metric_type and any range query filtering on
+        # recorded_at <= now, which looked exactly like the daily total
+        # "not updating". Today's materialized entry must never be stamped
+        # later than the actual current moment.
+        today = timezone.now().date()
+        authenticated_client.post(
+            "/api/meal-entries/",
+            {
+                "datetime": timezone.now().isoformat(),
+                "meal_type": "breakfast",
+                "food_item": food_item.id,
+                "quantity_g": "100.00",
+            },
+        )
+        calories_entry = MetricEntry.objects.get(
+            metric_type=daily_nutrition_metric_types["calories"], owner=regular_user
+        )
+        assert calories_entry.recorded_at.date() == today
+        assert calories_entry.recorded_at <= timezone.now()

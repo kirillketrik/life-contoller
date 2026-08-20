@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { ApiError, mealEntries } from "@/lib/api";
-import { MEAL_ENTRIES_QUERY_KEY } from "@/lib/query-keys";
+import { invalidateDailyNutritionMetricQueries, MEAL_ENTRIES_QUERY_KEY } from "@/lib/query-keys";
 import type { MealEntry } from "@/lib/types";
 
 export function DeleteMealEntryButton({ entry }: { entry: MealEntry }) {
@@ -29,6 +29,7 @@ export function DeleteMealEntryButton({ entry }: { entry: MealEntry }) {
     mutationFn: () => mealEntries.delete(entry.id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: MEAL_ENTRIES_QUERY_KEY });
+      invalidateDailyNutritionMetricQueries(queryClient);
       toast.success(t("deleted"));
     },
     onError: (error) => {
