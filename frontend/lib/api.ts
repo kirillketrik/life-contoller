@@ -15,6 +15,7 @@ import {
   type CreateMetricImportSettingsInput,
   type CreateMetricThresholdInput,
   type CreateMetricTypeInput,
+  type CreateRecipeInput,
   currentUserSchema,
   type DashboardElement,
   type DashboardElementInput,
@@ -45,6 +46,8 @@ import {
   nutrientTypeSchema,
   type Paginated,
   paginatedSchema,
+  type Recipe,
+  recipeSchema,
   type TimeframeUnit,
 } from "./types";
 
@@ -269,6 +272,26 @@ export const foodItems = {
       body: JSON.stringify(data),
     }),
   delete: (id: number) => requestVoid(`/api/food-items/${id}/`, { method: "DELETE" }),
+};
+
+export const recipes = {
+  list: (search?: string): Promise<Paginated<Recipe>> =>
+    request(
+      paginatedSchema(recipeSchema),
+      search ? `/api/recipes/?search=${encodeURIComponent(search)}` : "/api/recipes/",
+    ),
+  get: (id: number): Promise<Recipe> => request(recipeSchema, `/api/recipes/${id}/`),
+  create: (data: CreateRecipeInput): Promise<Recipe> =>
+    request(recipeSchema, "/api/recipes/", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  update: (id: number, data: CreateRecipeInput): Promise<Recipe> =>
+    request(recipeSchema, `/api/recipes/${id}/`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  delete: (id: number) => requestVoid(`/api/recipes/${id}/`, { method: "DELETE" }),
 };
 
 export const mealEntries = {

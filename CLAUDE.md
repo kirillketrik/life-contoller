@@ -78,6 +78,7 @@ Today's rules, all in `apps/metrics/permissions.py`:
 | `MetricImportSettings` / bulk import (**ownership** — exposed as actions on `MetricTypeViewSet`; see "Bulk metric-entry import" below) | own saved template only | any authenticated user, for their own data — bulk import is just repeated `MetricEntry` creation |
 | `NutrientType` (`apps/nutrition/permissions.py`'s `NutrientTypePermission`, role-gated via `PermissionService`, same pattern as `MetricType`) | any authenticated user | admins only — shared micronutrient catalog |
 | `FoodItem` (`FoodItemPermission`, **ownership**) | own food items only | any authenticated user, for their own food items only (no admin override) |
+| `Recipe` (`RecipePermission`, **ownership**) | own recipes only | any authenticated user, for their own recipes only (no admin override) |
 | `MealEntry` (`MealEntryPermission`, **ownership**) | own logged meals only | any authenticated user, for their own logged meals only (no admin override) |
 
 The important asymmetry: **defining** a metric type is an admin action (it's shared, global
@@ -570,6 +571,96 @@ later phases, not yet built.
   Playwright/Selenium-style dispatch both work fine; it's specific to how this tooling synthesizes
   events.
 
+**Phase 4 (Recipes)**, added on top of Phase 2 (this phase branched directly off Phase 2, before
+Phase 3's Open Food Facts integration was merged — the two are independent slices of the nutrition
+module and don't depend on each other):
+
+- **`Recipe`**/**`RecipeIngredient`** — a recipe is a named, ownership-scoped (same as `FoodItem`)
+  "union of products": a `Recipe` row (`name`, `servings` — how many servings the *whole* recipe
+  yields, `cost`) plus one `RecipeIngredient` row per `FoodItem` it contains (`food_item`,
+  `quantity_g`), written as a nested list on `RecipeSerializer` (`ingredients`) and replaced
+  atomically via `apps.nutrition.services.create_recipe_with_ingredients`/
+  `update_recipe_ingredients` — same "nested multi-model write goes through `services.py`" pattern
+  as `FoodItem`+`FoodNutrientValue`. `RecipeIngredient.food_item` is `on_delete=PROTECT`, same
+  protection `MealEntry.food_item` already has: a food item in active use can't be silently deleted
+  out from under whatever references it. A recipe's ingredients must all be the owner's own food
+  items (`RecipeSerializer.validate_ingredients`, mirroring `MealEntrySerializer`'s food-item
+  ownership check) — the FK itself doesn't scope by user, so this is what actually stops one user
+  referencing another's `FoodItem` by guessing its id.
+- **Nutrient totals are never stored, only computed** — `apps.nutrition.selectors` gained
+  `food_item_macro_totals(food_item, quantity_g)` (the one place the "per-100g × quantity/100"
+  arithmetic lives now, previously duplicated inline in `MealEntrySerializer`),
+  `recipe_macro_totals(recipe)` (sums every ingredient's macros — whole-recipe totals) and
+  `recipe_macro_totals_per_serving(recipe)` (divides by `Recipe.servings`). `RecipeSerializer`
+  exposes both as flat `total_calories`/`total_protein`/`total_fat`/`total_carbs` and
+  `calories_per_serving`/`protein_per_serving`/`fat_per_serving`/`carbs_per_serving` fields (8
+  `SerializerMethodField`s calling the selector independently) — safe from N+1 because
+  `recipe_macro_totals` iterates `recipe.ingredients.all()` (never `.select_related()`/`.filter()`
+  chained fresh), and `selectors.recipe_list_for_user` prefetches `ingredients__food_item`, so
+  Django's prefetch cache — which only a bare `.all()` reuses — absorbs all 8 calls into the one
+  query the list/detail view already made.
+- **`MealEntry` now logs either a `FoodItem` or a `Recipe`**, never both — `food_item` and
+  `quantity_g` became nullable, a new nullable `recipe` FK (`on_delete=PROTECT`, same reasoning)
+  and nullable `servings` DecimalField were added (migration `0003`, generated then applied, not
+  hand-written — existing rows already satisfy the new rule since they all have `food_item` set and
+  `recipe` null), and a `mealentry_exactly_one_of_food_or_recipe` `CheckConstraint` enforces it at
+  the DB level. `MealEntrySerializer.validate` mirrors the same rule at the API level (defense in
+  depth, same pattern used everywhere else in this app) and additionally requires `quantity_g > 0`
+  for a food-item entry or `servings > 0` for a recipe entry. A recipe-based entry's servings mean
+  "how many of the recipe's own servings were eaten" — independent of how many the recipe happens
+  to be divided into, so logging `servings=1.5` against a 4-serving recipe means one and a half of
+  *those* servings, not 1.5 out of some other total.
+- **`selectors.meal_entry_macro_totals(meal_entry)`** is the one function that turns either kind of
+  entry into calories/protein/fat/carbs — a food-item entry uses `food_item_macro_totals` directly;
+  a recipe entry uses `recipe_macro_totals_per_serving(recipe) × meal_entry.servings`. Both
+  `MealEntrySerializer` (per-entry calories shown in the API/diary) and
+  `services.recompute_daily_nutrition_metrics` (the Phase 2 daily-total materialization) call this
+  same function, so a day's total is correct whether its entries log a `FoodItem` directly, a
+  `Recipe`, or a mix of both — **zero special-casing** needed in the materialization logic itself,
+  matching the "aggregate once, derive many stats" rule the metrics layer already follows.
+  `selectors.meal_entry_list_for_user` prefetches `recipe__ingredients__food_item` for the same
+  N+1-avoidance reason as the recipe list.
+- **`GET/POST/PATCH/DELETE /api/recipes/`** (`RecipeViewSet`, ownership-scoped via a new
+  `RecipePermission`, same plain-ownership pattern as `FoodItemPermission`/`MealEntryPermission`)
+  incl. `?search=` by name, mirroring `/api/food-items/` exactly.
+- **Known limitation, not yet solved**: editing a recipe's ingredients does *not* retroactively
+  recompute the materialized daily-total `MetricEntry` rows for every past day that recipe was
+  logged against — only creating/editing/deleting the `MealEntry` itself triggers a recompute. A
+  recipe edit's effect on historical days self-heals the next time that day's meals are touched,
+  same "self-heals rather than silently corrupting data" tolerance already documented for the
+  daily-total metric types' own manual-entry gap in Phase 2 — deliberately not solved eagerly here
+  (would need tracking every date a recipe was ever logged against) since it's the same accepted
+  class of staleness, not a new one.
+- Frontend: `components/nutrition/recipe-dialog.tsx`'s `RecipeDialog` — create-and-edit in one
+  component (pass an optional `recipe`), same pattern as `FoodItemDialog`'s nutrient-value row
+  editor but for ingredients (food-item `Select` + quantity input, add/remove rows, duplicate food
+  items disabled in the picker as a UX guard even though the backend doesn't enforce uniqueness on
+  `RecipeIngredient`). Additionally shows a **live, client-side-computed** estimated total calorie
+  count while building the recipe (same per-100g × quantity/100 arithmetic as the backend, run
+  against the already-fetched food-item list) — purely a UX aid before the recipe is ever saved, not
+  a substitute for the server-computed totals shown after saving.
+  `components/nutrition/delete-recipe-button.tsx` mirrors `delete-food-item-button.tsx` exactly.
+  `app/[locale]/nutrition/recipes/page.tsx` (sidebar: "Рецепты", below "Продукты") is the recipe
+  list/search page, same shape as `/nutrition`'s food-item list but showing servings and
+  calories-per-serving instead of per-100g macros. `MealEntryDialog` gained an `itemType`
+  (`foodItem`/`recipe`) `Select` at the top that swaps the rest of the form: the food-item picker +
+  quantity(g) input for `foodItem`, a recipe picker + servings input for `recipe` — derived from
+  whether an edited `entry.recipe` is set, so editing an existing recipe-based entry reopens
+  correctly pre-selected in recipe mode. The food-diary table (`/nutrition/log`) shows
+  `entry.food_item_name ?? entry.recipe_name` with a "рецепт" `Badge` next to a recipe-based row's
+  name, and its quantity column shows `{quantity_g} г` or `× {servings}` depending on which is set.
+- Manually verified end-to-end via browser: created a 2-serving recipe from two food items (chicken
+  200g + rice 100g), confirming the dialog's live estimate (460 kcal) matched the saved totals
+  exactly and `calories_per_serving` correctly divided by `servings` (230); logged a meal against
+  that recipe via `MealEntryDialog`'s recipe mode, confirming the diary row's badge/servings display
+  and its calories (230, i.e. 1 serving eaten) were correct; confirmed the materialized "Калории
+  (день)" `MetricEntry` picked up the recipe-based entry's total with no special handling; reopened
+  the logged entry's edit dialog and confirmed it correctly restored recipe mode with the right
+  recipe pre-selected. Hit both documented dev-loop quirks mid-session (a stale Granian reload
+  crash-looping on an `ImportError` for the new `Recipe` model, and stale Turbopack routing 404ing
+  the new `/nutrition/recipes` page) — restarting the respective container fixed each, per the
+  existing documented workaround.
+
 ## Skills policy
 
 - Before starting any UI work, check for and use a project skill dedicated to
@@ -773,10 +864,10 @@ life-controller/
 │   │   │   ├── urls.py
 │   │   │   └── management/commands/
 │   │   │       └── seed_metrics.py    # idempotent baseline MetricTypes (incl. choice options) + FormulaDefinitions
-│   │   └── nutrition/              # NutrientType / FoodItem / FoodNutrientValue / MealEntry (Phases 1-2 — see "Nutrition module")
+│   │   └── nutrition/              # NutrientType / FoodItem / FoodNutrientValue / MealEntry / Recipe (Phases 1-2, 4 — see "Nutrition module")
 │   │       ├── models.py
-│   │       ├── selectors.py
-│   │       ├── services.py        # nested FoodItem+FoodNutrientValue writes; recompute_daily_nutrition_metrics
+│   │       ├── selectors.py       # incl. food_item/recipe/meal_entry_macro_totals (Phase 4)
+│   │       ├── services.py        # nested FoodItem+FoodNutrientValue and Recipe+RecipeIngredient writes; recompute_daily_nutrition_metrics
 │   │       ├── serializers.py
 │   │       ├── views.py
 │   │       ├── permissions.py
@@ -818,7 +909,8 @@ life-controller/
     │       │   └── import/page.tsx    # bulk metric-entry import (template builder + paste/upload + preview)
     │       └── nutrition/
     │           ├── page.tsx           # FoodItem list + search + create/edit/delete (ownership-gated, Phase 1)
-    │           └── log/page.tsx       # food diary: date picker + daily totals + meal entry list (Phase 2)
+    │           ├── log/page.tsx       # food diary: date picker + daily totals + meal entry list (Phase 2)
+    │           └── recipes/page.tsx   # Recipe list + search + create/edit/delete (ownership-gated, Phase 4)
     ├── components/
     │   ├── ui/                      # shadcn/ui primitives only
     │   ├── shared/                  # domain-agnostic reusable widgets (not shadcn primitives)
@@ -845,8 +937,10 @@ life-controller/
     │   ├── nutrition/                # feature components (Phase 1)
     │   │   ├── food-item-dialog.tsx         # create AND edit (pass `item`) — same pattern as MetricEntryDialog
     │   │   ├── delete-food-item-button.tsx  # icon button + AlertDialog confirm, per row
-    │   │   ├── meal-entry-dialog.tsx        # create AND edit (pass `entry`) — Phase 2
-    │   │   └── delete-meal-entry-button.tsx # icon button + AlertDialog confirm, per row — Phase 2
+    │   │   ├── meal-entry-dialog.tsx        # create AND edit (pass `entry`) — Phase 2; itemType toggle (food item/recipe) added Phase 4
+    │   │   ├── delete-meal-entry-button.tsx # icon button + AlertDialog confirm, per row — Phase 2
+    │   │   ├── recipe-dialog.tsx            # create AND edit (pass `recipe`) — ingredient row editor + live estimate — Phase 4
+    │   │   └── delete-recipe-button.tsx     # icon button + AlertDialog confirm, per row — Phase 4
     │   ├── auth-provider.tsx        # current-user context, backed by TanStack Query
     │   ├── query-provider.tsx
     │   ├── theme-provider.tsx
@@ -955,6 +1049,7 @@ Installing a new package or shadcn component works the same way, e.g.
 | Threshold bound lines on charts + time-in-range as a dashboard element (`GET /aggregate/` and `dashboard_element_stats` both gained a `threshold` field — `{lower_bound, upper_bound}` or `null`, resolved from the same `MetricThreshold` fetch each already did for `time_in_range_percent` — and `MetricChart` draws each non-null bound as a red dashed `series.createPriceLine`; new `DashboardElement.show_time_in_range` boolean (migration `0012`), computed via the existing `aggregation.time_in_range_percent` over the same resolved-range points used for max/min/avg, wired into `DashboardElementInputSerializer`'s "at least one `show_*`" validation, `DashboardElementConfigDialog`'s toggle list, and `DashboardElementCard`'s stat row reusing the detail page's existing `statTimeInRange` label) | `feature/dashboard-elements` | Implemented, manually verified end-to-end via browser (seeded a 4.0-6.5 threshold on the blood-sugar metric type with 6 entries spanning in- and out-of-range values; confirmed via direct API checks that both `/aggregate/` and `/api/dashboard-elements/` return the correct `threshold` object and `time_in_range_percent` matching 5/6 in-range = 83.3%; enabled chart + time-in-range on the dashboard-element config dialog, saved, and confirmed the dashboard block renders the time-in-range stat; no console errors from `createPriceLine`); backend: 198/198 tests passing incl. 5 new (`test_time_in_range_only_present_when_show_time_in_range_true`, `test_time_in_range_is_null_without_a_configured_threshold`, `test_chart_includes_threshold_for_bound_lines`, `test_saving_show_time_in_range_only_is_accepted` in `test_dashboard_elements.py`, plus a `threshold`-field assertion in `test_aggregate_api.py`), `ruff check .` clean on every file this pass touched; frontend: `eslint`/`tsc` clean |
 | Nutrition module Phase 1 — food item core (new `apps/nutrition` Django app; `NutrientType` catalog, role-gated like `MetricType`, seeded via `seed_nutrients` with the usual vitamins/minerals + sub-macro breakdown nutrients; `FoodItem` — ownership-based, not shared, fixed `calories`/`protein`/`fat`/`carbs` Decimal columns + a `FoodNutrientValue` join table for arbitrary micronutrients, `source`/`external_id`/`is_verified` present on the model but read-only via the API this phase (own/verified only — external-search import is a later phase); `GET/POST/PATCH/DELETE /api/food-items/` incl. `?search=` by name, `GET /api/nutrient-types/`; frontend `FoodItemDialog` create+edit incl. a nutrient-value row editor, `DeleteFoodItemButton`, `/nutrition` list/search page, new sidebar "Питание" group) | `feature/nutrition-food-items` | Implemented, manually verified end-to-end via browser (created "Куриная грудка" with macros + a Vitamin C value, edited its calories, searched by substring match and by a non-matching term, deleted it — each step reflected correctly in the table); backend: 211/211 tests passing incl. 13 new for nutrition (`test_nutrient_types.py`, `test_food_items.py`), `ruff check .` clean on every file this pass touched (pre-existing `E501` errors in untouched metrics test files predate this branch); frontend: `eslint`/`tsc --noEmit` clean. `other_user` fixture promoted from `tests/metrics/conftest.py` to the shared root `tests/conftest.py` now that a second test package needs it. Recipes, meal planning, and the Open Food Facts integration are later phases, not yet built. |
 | Nutrition module Phase 2 — meal logging (`MealEntry` — ownership-based, `food_item` required FK (`recipe` not wired up until Phase 4), per-entry `calories`/`protein`/`fat`/`carbs` computed from the food item rather than stored; `GET/POST/PATCH/DELETE /api/meal-entries/` incl. `?date=` filter; daily calorie/macro totals exposed through the *existing* formula-metric engine by materializing them as ordinary `MetricEntry` rows — `services.recompute_daily_nutrition_metrics`, called on every `MealEntry` create/update/delete — onto four new non-computed `MetricType`s seeded by `seed_nutrition_metrics`, so they get charts/timeframes/dashboard elements with zero changes to `apps.metrics`; a further computed `MetricType`+`FormulaDefinition` "% дневной нормы калорий" compares daily calories against the existing TDEE formula using only the engine's existing `/`/`*` nodes; frontend `MealEntryDialog` create+edit incl. a food-item picker and a `defaultDate` seed, `DeleteMealEntryButton`, `/nutrition/log` food-diary page with a date picker, client-side-summed daily-total `SummaryStat` tiles, and an entry table; sidebar gained "Дневник питания" above "Продукты") | `feature/nutrition-meal-logging` | Implemented, manually verified end-to-end via browser (logged a 150g chicken-breast breakfast, confirmed the diary's totals and per-entry calories matched the expected math; edited the quantity to 200g and confirmed both the diary and the materialized `MetricEntry` recomputed; deleted the entry and confirmed both the diary and the materialized entry cleared instead of showing a stale zero; the new "Калории (день)" metric type rendered correctly on its own detail page using the *unmodified* chart/summary UI, and — after configuring a dashboard element for it through the *unmodified* `DashboardElementConfigDialog` — on the dashboard itself; the seeded "% дневной нормы калорий" formula evaluated a real percentage against the account's existing TDEE data); backend: 223/223 tests passing incl. 12 new for meal entries/daily-total materialization, `ruff check .` clean on every file this pass touched; frontend: `eslint`/`tsc --noEmit` clean. Known limitation documented above: the four daily-total metric types aren't `is_computed` (a materialization constraint, not an oversight), so nothing currently stops a manual `MetricEntry` against them — self-heals on the next meal edit for that day, but not actually prevented. |
+| Nutrition module Phase 4 — recipes (`Recipe`/`RecipeIngredient` — ownership-based, a recipe is a named "union of products": an owner, `servings` the whole recipe yields, `cost`, and a nested `ingredients` list of `FoodItem`+`quantity_g` rows written atomically via `services.create_recipe_with_ingredients`/`update_recipe_ingredients`; nutrient totals are never stored, only computed at read time by new `selectors.food_item_macro_totals`/`recipe_macro_totals`/`recipe_macro_totals_per_serving`, exposed as 8 flat fields on `RecipeSerializer` with no N+1 thanks to `ingredients__food_item` prefetching; `MealEntry.food_item`/`quantity_g` became nullable, gained nullable `recipe`/`servings`, and a `mealentry_exactly_one_of_food_or_recipe` `CheckConstraint` (migration `0003`) — enforced again in `MealEntrySerializer.validate`; new `selectors.meal_entry_macro_totals` turns either kind of entry into calories/protein/fat/carbs and is now the one function both `MealEntrySerializer` and `services.recompute_daily_nutrition_metrics` call, so the Phase 2 daily-total materialization sums recipe-based entries with zero special-casing; `GET/POST/PATCH/DELETE /api/recipes/` incl. `?search=`, new ownership-scoped `RecipePermission`; frontend `RecipeDialog` create+edit with an ingredient row editor and a live client-computed calorie estimate, `DeleteRecipeButton`, `/nutrition/recipes` list/search page, sidebar gained "Рецепты" below "Продукты"; `MealEntryDialog` gained an itemType (food item/recipe) toggle that swaps the picker and quantity/servings input, and the food-diary table shows a "рецепт" badge + `× servings` for recipe-based rows) | `feature/nutrition-recipes` | Implemented, manually verified end-to-end via browser (created a 2-serving recipe from 200g chicken + 100g rice, confirmed the dialog's live estimate (460 kcal) matched the saved `total_calories` exactly and `calories_per_serving` correctly divided by servings (230); logged a meal against the recipe via the new itemType toggle, confirmed the diary's badge/servings display and per-entry calories (230, i.e. 1 serving eaten); confirmed the materialized "Калории (день)" `MetricEntry` picked up the recipe-based entry's total with no special handling; reopened the entry's edit dialog and confirmed it correctly restored recipe mode with the right recipe pre-selected); backend: 241/241 tests passing incl. 18 new in `test_recipes.py` (recipe CRUD/ownership/search, ingredient-ownership validation, nutrient-total math, recipe-based `MealEntry` creation/servings-scaling/cross-user rejection, exactly-one-of-food-or-recipe validation, daily-total materialization with recipe and mixed food-item+recipe days), `ruff check .` clean on every file this pass touched; frontend: `eslint`/`tsc --noEmit` clean. Branched directly off Phase 2 (not Phase 3, which was still an unmerged sibling branch at the time) — the two Phase-3/Phase-4 slices are independent and don't depend on each other. Hit both documented dev-loop quirks mid-session (a stale Granian reload crash-looping on an `ImportError` for the new `Recipe` model after `makemigrations`/`migrate`, and stale Turbopack routing 404ing the new `/nutrition/recipes` page) — restarting the respective container fixed each. Known limitation documented above: editing a recipe's ingredients doesn't retroactively recompute past days' materialized totals for meals already logged against it — self-heals the next time that day's meals are touched, same accepted staleness class as Phase 2's own daily-total gap. |
 
 `MetricEntry` and `MetricThreshold` are **ownership-based**, not admin-gated: any authenticated
 user creates/edits/deletes their own entries and thresholds; only `MetricType` definitions and
@@ -963,5 +1058,7 @@ correction partway through the dashboards work, since the original all-admin-gat
 rule made no sense for a personal tracking app once users other than the admin exist.
 
 No other feature modules (workouts, finances) have been started yet; the nutrition module is under
-way (Phases 1-2 above) per the phased plan in its implementation prompt — Recipes, meal planning,
-and the Open Food Facts integration remain.
+way (Phases 1-2, 4 above, on separate branches — Phase 3's Open Food Facts integration is also
+implemented on its own sibling branch, `feature/nutrition-off-integration`, not yet merged as of
+this branch) per the phased plan in its implementation prompt — meal planning and cost-field UI
+remain (Phases 5-6).

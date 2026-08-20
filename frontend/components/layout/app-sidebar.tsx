@@ -3,6 +3,7 @@
 import {
   Apple,
   BookOpen,
+  ChefHat,
   ChevronsUpDown,
   LayoutDashboard,
   ListTree,
@@ -136,6 +137,16 @@ export function AppSidebar() {
                     >
                       <Apple />
                       <span>{t("foodItems")}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      render={<Link href="/nutrition/recipes" />}
+                      isActive={pathname.startsWith("/nutrition/recipes")}
+                      tooltip={t("recipes")}
+                    >
+                      <ChefHat />
+                      <span>{t("recipes")}</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 </SidebarMenu>
