@@ -514,6 +514,48 @@ export const createFoodItemSchema = z
   );
 export type CreateFoodItemInput = z.infer<typeof createFoodItemSchema>;
 
+export const recipeIngredientSchema = z.object({
+  id: z.number(),
+  food_item: z.number(),
+  food_item_name: z.string(),
+  quantity_g: decimalStringSchema,
+});
+export type RecipeIngredient = z.infer<typeof recipeIngredientSchema>;
+
+export const recipeSchema = z.object({
+  id: z.number(),
+  owner: z.number(),
+  name: z.string(),
+  servings: z.number(),
+  cost: decimalStringSchema.nullable(),
+  ingredients: z.array(recipeIngredientSchema),
+  total_calories: decimalStringSchema,
+  total_protein: decimalStringSchema,
+  total_fat: decimalStringSchema,
+  total_carbs: decimalStringSchema,
+  calories_per_serving: decimalStringSchema,
+  protein_per_serving: decimalStringSchema,
+  fat_per_serving: decimalStringSchema,
+  carbs_per_serving: decimalStringSchema,
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type Recipe = z.infer<typeof recipeSchema>;
+
+export const createRecipeIngredientSchema = z.object({
+  food_item: z.number(),
+  quantity_g: z.number().positive(),
+});
+export type CreateRecipeIngredientInput = z.infer<typeof createRecipeIngredientSchema>;
+
+export const createRecipeSchema = z.object({
+  name: z.string().trim().min(1, "Name is required"),
+  servings: z.number().int().positive(),
+  cost: z.number().nullable().optional(),
+  ingredients: z.array(createRecipeIngredientSchema).min(1, "At least one ingredient is required"),
+});
+export type CreateRecipeInput = z.infer<typeof createRecipeSchema>;
+
 export const mealTypeSchema = z.enum(["breakfast", "lunch", "dinner", "snack"]);
 export type MealType = z.infer<typeof mealTypeSchema>;
 
@@ -522,9 +564,12 @@ export const mealEntrySchema = z.object({
   owner: z.number(),
   datetime: z.string(),
   meal_type: mealTypeSchema,
-  food_item: z.number(),
-  food_item_name: z.string(),
-  quantity_g: decimalStringSchema,
+  food_item: z.number().nullable(),
+  food_item_name: z.string().nullable(),
+  recipe: z.number().nullable(),
+  recipe_name: z.string().nullable(),
+  quantity_g: decimalStringSchema.nullable(),
+  servings: decimalStringSchema.nullable(),
   cost: decimalStringSchema.nullable(),
   calories: decimalStringSchema,
   protein: decimalStringSchema,
@@ -535,11 +580,20 @@ export const mealEntrySchema = z.object({
 });
 export type MealEntry = z.infer<typeof mealEntrySchema>;
 
-export const createMealEntrySchema = z.object({
-  datetime: z.string(),
-  meal_type: mealTypeSchema,
-  food_item: z.number(),
-  quantity_g: z.number().positive(),
-  cost: z.number().nullable().optional(),
-});
+/** Exactly one of `food_item`/`recipe` — mirrors the backend's
+ * `mealentry_exactly_one_of_food_or_recipe` CheckConstraint. */
+export const createMealEntrySchema = z
+  .object({
+    datetime: z.string(),
+    meal_type: mealTypeSchema,
+    food_item: z.number().nullable().optional(),
+    recipe: z.number().nullable().optional(),
+    quantity_g: z.number().positive().nullable().optional(),
+    servings: z.number().positive().nullable().optional(),
+    cost: z.number().nullable().optional(),
+  })
+  .refine((data) => Boolean(data.food_item) !== Boolean(data.recipe), {
+    message: "Choose either a food item or a recipe",
+    path: ["food_item"],
+  });
 export type CreateMealEntryInput = z.infer<typeof createMealEntrySchema>;

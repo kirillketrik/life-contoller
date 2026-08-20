@@ -9,6 +9,7 @@ import { useAuth } from "@/components/auth-provider";
 import { SummaryStat } from "@/components/metrics/summary-stat";
 import { DeleteMealEntryButton } from "@/components/nutrition/delete-meal-entry-button";
 import { MealEntryDialog } from "@/components/nutrition/meal-entry-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -98,8 +99,15 @@ export default function NutritionLogPage() {
             {entries.map((entry) => (
               <TableRow key={entry.id}>
                 <TableCell>{tMealType(entry.meal_type)}</TableCell>
-                <TableCell className="font-medium">{entry.food_item_name}</TableCell>
-                <TableCell className="text-right">{entry.quantity_g} г</TableCell>
+                <TableCell className="font-medium">
+                  <div className="flex items-center gap-2">
+                    {entry.food_item_name ?? entry.recipe_name}
+                    {entry.recipe_name && <Badge variant="outline">{t("recipeBadge")}</Badge>}
+                  </div>
+                </TableCell>
+                <TableCell className="text-right">
+                  {entry.food_item_name ? `${entry.quantity_g} г` : `× ${entry.servings}`}
+                </TableCell>
                 <TableCell className="text-right">{entry.calories}</TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-1">

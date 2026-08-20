@@ -1,9 +1,19 @@
 from rest_framework import viewsets
 
 from . import selectors, services
-from .models import FoodItem, MealEntry, NutrientType
-from .permissions import FoodItemPermission, MealEntryPermission, NutrientTypePermission
-from .serializers import FoodItemSerializer, MealEntrySerializer, NutrientTypeSerializer
+from .models import FoodItem, MealEntry, NutrientType, Recipe
+from .permissions import (
+    FoodItemPermission,
+    MealEntryPermission,
+    NutrientTypePermission,
+    RecipePermission,
+)
+from .serializers import (
+    FoodItemSerializer,
+    MealEntrySerializer,
+    NutrientTypeSerializer,
+    RecipeSerializer,
+)
 
 
 class NutrientTypeViewSet(viewsets.ModelViewSet):
@@ -22,6 +32,17 @@ class FoodItemViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return selectors.food_item_list_for_user(
+            user=self.request.user, search=self.request.query_params.get("search")
+        )
+
+
+class RecipeViewSet(viewsets.ModelViewSet):
+    serializer_class = RecipeSerializer
+    permission_classes = [RecipePermission]
+    queryset = Recipe.objects.none()  # required for router basename inference
+
+    def get_queryset(self):
+        return selectors.recipe_list_for_user(
             user=self.request.user, search=self.request.query_params.get("search")
         )
 

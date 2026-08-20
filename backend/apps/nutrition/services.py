@@ -18,7 +18,8 @@ from django.utils import timezone
 
 from apps.metrics.models import MetricEntry, MetricType
 
-from .models import FoodItem, FoodNutrientValue, MealEntry
+from . import selectors
+from .models import FoodItem, FoodNutrientValue, Recipe, RecipeIngredient
 
 # key -> MetricType.name of the materialized daily-total metric. Looked up by
 # name (not a hardcoded id) so this app never depends on apps.metrics
@@ -62,6 +63,34 @@ def _replace_nutrient_values(food_item: FoodItem, nutrient_values_data: list[dic
     )
 
 
+def create_recipe_with_ingredients(
+    *, validated_data: dict, ingredients_data: list[dict], user
+) -> Recipe:
+    with transaction.atomic():
+        recipe = Recipe.objects.create(owner=user, **validated_data)
+        _replace_ingredients(recipe, ingredients_data)
+    return recipe
+
+
+def update_recipe_ingredients(*, recipe: Recipe, ingredients_data: list[dict]) -> None:
+    with transaction.atomic():
+        _replace_ingredients(recipe, ingredients_data)
+
+
+def _replace_ingredients(recipe: Recipe, ingredients_data: list[dict]) -> None:
+    recipe.ingredients.all().delete()
+    RecipeIngredient.objects.bulk_create(
+        [
+            RecipeIngredient(
+                recipe=recipe,
+                food_item=item["food_item"],
+                quantity_g=item["quantity_g"],
+            )
+            for item in ingredients_data
+        ]
+    )
+
+
 def recompute_daily_nutrition_metrics(*, user, entry_date: date_cls) -> None:
     """Recomputes `entry_date`'s calorie/macro totals from `user`'s
     `MealEntry` rows and materializes them as ordinary `MetricEntry` rows on
@@ -78,17 +107,18 @@ def recompute_daily_nutrition_metrics(*, user, entry_date: date_cls) -> None:
     type that hasn't been seeded yet (see `seed_nutrition_metrics`) — same
     tolerance the formula engine already has for a formula referencing a
     metric type nobody has logged data for yet.
+
+    Sums via `selectors.meal_entry_macro_totals`, the same function
+    `MealEntrySerializer` uses — a day's total is correct whether its entries
+    log a `FoodItem` directly, a `Recipe`, or a mix of both, with no
+    special-casing here.
     """
-    entries = list(
-        MealEntry.objects.filter(owner=user, datetime__date=entry_date).select_related("food_item")
-    )
+    entries = list(selectors.meal_entry_list_for_user(user=user, entry_date=str(entry_date)))
     totals = {"calories": 0.0, "protein": 0.0, "fat": 0.0, "carbs": 0.0}
     for entry in entries:
-        factor = float(entry.quantity_g) / 100
-        totals["calories"] += float(entry.food_item.calories_per_100g) * factor
-        totals["protein"] += float(entry.food_item.protein_per_100g) * factor
-        totals["fat"] += float(entry.food_item.fat_per_100g) * factor
-        totals["carbs"] += float(entry.food_item.carbs_per_100g) * factor
+        entry_totals = selectors.meal_entry_macro_totals(entry)
+        for key in totals:
+            totals[key] += entry_totals[key]
 
     recorded_at = timezone.make_aware(
         datetime_cls.combine(entry_date, time(12, 0)), timezone.get_current_timezone()
