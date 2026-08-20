@@ -2,29 +2,31 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
 import { CreateMetricTypeDialog } from "@/components/metrics/create-metric-type-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link, useRouter } from "@/i18n/navigation";
 import { metricTypes } from "@/lib/api";
-import { METRIC_TYPES_QUERY_KEY } from "@/lib/query-keys";
+import { metricTypesQueryKey } from "@/lib/query-keys";
 
 export default function MetricsPage() {
   const t = useTranslations("metrics");
   const { user, loading: authLoading } = useAuth();
   const router = useRouter();
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     if (!authLoading && !user) router.replace("/login");
   }, [authLoading, user, router]);
 
   const { data, isLoading } = useQuery({
-    queryKey: METRIC_TYPES_QUERY_KEY,
-    queryFn: () => metricTypes.list(),
+    queryKey: metricTypesQueryKey(search),
+    queryFn: () => metricTypes.list(search || undefined),
     enabled: Boolean(user),
   });
 
@@ -42,6 +44,13 @@ export default function MetricsPage() {
         {user?.is_admin && <CreateMetricTypeDialog />}
       </div>
 
+      <Input
+        placeholder={t("searchPlaceholder")}
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        className="max-w-sm"
+      />
+
       {isLoading ? (
         <div className="grid gap-3 sm:grid-cols-2">
           {Array.from({ length: 4 }).map((_, i) => (
@@ -49,7 +58,7 @@ export default function MetricsPage() {
           ))}
         </div>
       ) : types.length === 0 ? (
-        <p className="text-sm text-muted-foreground">{t("empty")}</p>
+        <p className="text-sm text-muted-foreground">{search ? t("noResults") : t("empty")}</p>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2">
           {types.map((type) => (

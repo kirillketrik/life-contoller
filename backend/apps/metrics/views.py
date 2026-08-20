@@ -50,7 +50,7 @@ class MetricTypeViewSet(viewsets.ModelViewSet):
     queryset = MetricType.objects.none()  # required for router basename inference
 
     def get_queryset(self):
-        return selectors.metric_type_list()
+        return selectors.metric_type_list(search=self.request.query_params.get("search"))
 
     def get_permissions(self):
         """Configuring a metric's dashboard elements and bulk-importing

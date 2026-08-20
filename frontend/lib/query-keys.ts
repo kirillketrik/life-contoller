@@ -4,6 +4,8 @@ import type { AggregateParams, MealPlanEntryListParams } from "./api";
 
 export const METRIC_TYPES_QUERY_KEY = ["metric-types"] as const;
 
+export const metricTypesQueryKey = (search?: string) => ["metric-types", search ?? ""] as const;
+
 export const metricTypeQueryKey = (id: number) => ["metric-types", id] as const;
 
 export const metricEntriesQueryKey = (metricTypeId: number) =>

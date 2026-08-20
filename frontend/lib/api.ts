@@ -133,8 +133,11 @@ export const auth = {
 };
 
 export const metricTypes = {
-  list: (): Promise<Paginated<MetricType>> =>
-    request(paginatedSchema(metricTypeSchema), "/api/metric-types/"),
+  list: (search?: string): Promise<Paginated<MetricType>> =>
+    request(
+      paginatedSchema(metricTypeSchema),
+      search ? `/api/metric-types/?search=${encodeURIComponent(search)}` : "/api/metric-types/",
+    ),
   get: (id: number): Promise<MetricType> =>
     request(metricTypeSchema, `/api/metric-types/${id}/`),
   create: (data: CreateMetricTypeInput): Promise<MetricType> =>
