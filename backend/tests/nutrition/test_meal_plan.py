@@ -240,3 +240,107 @@ class TestMarkEaten:
         entry = MealEntry.objects.get(id=response.data["resulting_meal_entry"])
         assert entry.recipe_id == recipe.id
         assert entry.servings == 1
+
+
+class TestDuplicateDay:
+    def test_duplicates_every_entry_from_source_to_target_date(
+        self, authenticated_client, regular_user, food_item, recipe
+    ):
+        baker.make(
+            MealPlanEntry,
+            owner=regular_user,
+            meal_type="breakfast",
+            food_item=food_item,
+            quantity_g=150,
+            date="2026-09-01",
+        )
+        baker.make(
+            MealPlanEntry,
+            owner=regular_user,
+            meal_type="lunch",
+            recipe=recipe,
+            servings=1,
+            date="2026-09-01",
+        )
+        response = authenticated_client.post(
+            "/api/meal-plan-entries/duplicate-day/",
+            {"source_date": "2026-09-01", "target_date": "2026-09-08"},
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        assert len(response.data) == 2
+
+        target_entries = MealPlanEntry.objects.filter(owner=regular_user, date="2026-09-08")
+        assert target_entries.count() == 2
+        meal_types = {entry.meal_type for entry in target_entries}
+        assert meal_types == {"breakfast", "lunch"}
+        for entry in target_entries:
+            assert entry.resulting_meal_entry_id is None
+        # the source day's own entries must be untouched
+        assert MealPlanEntry.objects.filter(owner=regular_user, date="2026-09-01").count() == 2
+
+    def test_duplicating_an_empty_day_creates_nothing(self, authenticated_client):
+        response = authenticated_client.post(
+            "/api/meal-plan-entries/duplicate-day/",
+            {"source_date": "2026-09-01", "target_date": "2026-09-08"},
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        assert response.data == []
+
+    def test_duplicate_is_additive_onto_a_day_that_already_has_plans(
+        self, authenticated_client, regular_user, food_item
+    ):
+        baker.make(
+            MealPlanEntry,
+            owner=regular_user,
+            food_item=food_item,
+            quantity_g=100,
+            date="2026-09-01",
+        )
+        baker.make(
+            MealPlanEntry,
+            owner=regular_user,
+            food_item=food_item,
+            quantity_g=100,
+            date="2026-09-08",
+        )
+        response = authenticated_client.post(
+            "/api/meal-plan-entries/duplicate-day/",
+            {"source_date": "2026-09-01", "target_date": "2026-09-08"},
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        assert MealPlanEntry.objects.filter(owner=regular_user, date="2026-09-08").count() == 2
+
+    def test_only_duplicates_the_requesting_users_own_entries(
+        self, authenticated_client, regular_user, other_user
+    ):
+        their_food = baker.make(
+            "nutrition.FoodItem",
+            owner=other_user,
+            calories_per_100g=1,
+            protein_per_100g=1,
+            fat_per_100g=1,
+            carbs_per_100g=1,
+        )
+        baker.make(
+            MealPlanEntry, owner=other_user, food_item=their_food, quantity_g=100, date="2026-09-01"
+        )
+        response = authenticated_client.post(
+            "/api/meal-plan-entries/duplicate-day/",
+            {"source_date": "2026-09-01", "target_date": "2026-09-08"},
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        assert response.data == []
+        assert not MealPlanEntry.objects.filter(owner=regular_user, date="2026-09-08").exists()
+
+    def test_anonymous_cannot_duplicate(self, api_client):
+        response = api_client.post(
+            "/api/meal-plan-entries/duplicate-day/",
+            {"source_date": "2026-09-01", "target_date": "2026-09-08"},
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_requires_both_dates(self, authenticated_client):
+        response = authenticated_client.post(
+            "/api/meal-plan-entries/duplicate-day/", {"source_date": "2026-09-01"}
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST

@@ -145,6 +145,35 @@ def recompute_daily_nutrition_metrics(*, user, entry_date: date_cls) -> None:
             )
 
 
+def duplicate_meal_plan_day(
+    *, user, source_date: date_cls, target_date: date_cls
+) -> list[MealPlanEntry]:
+    """Copies every one of `user`'s planned meals from `source_date` onto
+    `target_date` — purely additive: any plans already on `target_date` are
+    left untouched rather than merged or replaced, so duplicating twice, or
+    onto a day that already has plans, just adds more rows instead of
+    erroring. Carries over `meal_type`/`food_item`/`recipe`/`quantity_g`/
+    `servings` only — never `resulting_meal_entry`, since a freshly duplicated
+    plan always starts unmarked regardless of whether the source day's meal
+    was eaten. `source_date == target_date` is allowed (doubles that day's
+    plans) rather than specially rejected — an unusual but valid request, not
+    worth extra validation to prevent."""
+    source_entries = selectors.meal_plan_entry_list_for_user(user=user, date=str(source_date))
+    new_entries = [
+        MealPlanEntry(
+            owner=user,
+            date=target_date,
+            meal_type=entry.meal_type,
+            food_item=entry.food_item,
+            recipe=entry.recipe,
+            quantity_g=entry.quantity_g,
+            servings=entry.servings,
+        )
+        for entry in source_entries
+    ]
+    return MealPlanEntry.objects.bulk_create(new_entries)
+
+
 def mark_meal_plan_entry_eaten(*, plan_entry: MealPlanEntry) -> MealEntry:
     """Converts a planned meal into a real, logged `MealEntry` — the one
     action that makes a plan actually count. A `MealPlanEntry` by itself

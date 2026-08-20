@@ -24,6 +24,7 @@ import {
   dashboardElementSchema,
   type DashboardSummary,
   dashboardSummarySchema,
+  type DuplicateMealPlanDayInput,
   type FoodItem,
   foodItemSchema,
   type FormulaDefinition,
@@ -35,6 +36,7 @@ import {
   type MealEntry,
   mealEntrySchema,
   type MealPlanEntry,
+  mealPlanEntryListSchema,
   mealPlanEntrySchema,
   type MetricEntry,
   metricEntrySchema,
@@ -347,6 +349,11 @@ export const mealPlanEntries = {
   delete: (id: number) => requestVoid(`/api/meal-plan-entries/${id}/`, { method: "DELETE" }),
   markEaten: (id: number): Promise<MealPlanEntry> =>
     request(mealPlanEntrySchema, `/api/meal-plan-entries/${id}/mark-eaten/`, { method: "POST" }),
+  duplicateDay: (data: DuplicateMealPlanDayInput): Promise<MealPlanEntry[]> =>
+    request(mealPlanEntryListSchema, "/api/meal-plan-entries/duplicate-day/", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
 };
 
 export const formulaDefinitions = {
