@@ -45,6 +45,28 @@ class TestMetricTypePermissions:
         response = authenticated_client.delete(f"/api/metric-types/{number_metric_type.id}/")
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
+    def test_search_filters_by_name(self, authenticated_client):
+        baker.make("metrics.MetricType", name="Вес", value_type=ValueType.NUMBER)
+        baker.make("metrics.MetricType", name="Рост", value_type=ValueType.NUMBER)
+
+        response = authenticated_client.get("/api/metric-types/?search=вес")
+        names = [item["name"] for item in response.data["results"]]
+        assert names == ["Вес"]
+
+    def test_search_is_case_insensitive_substring_match(self, authenticated_client):
+        baker.make("metrics.MetricType", name="Обхват талии", value_type=ValueType.NUMBER)
+        baker.make("metrics.MetricType", name="Рост", value_type=ValueType.NUMBER)
+
+        response = authenticated_client.get("/api/metric-types/?search=ТАЛИ")
+        names = [item["name"] for item in response.data["results"]]
+        assert names == ["Обхват талии"]
+
+    def test_no_search_returns_everything(self, authenticated_client, number_metric_type):
+        baker.make("metrics.MetricType", name="Другая метрика", value_type=ValueType.NUMBER)
+
+        response = authenticated_client.get("/api/metric-types/")
+        assert len(response.data["results"]) == 2
+
 
 class TestMetricEntryPermissions:
     def test_regular_user_can_create_own_entry(self, authenticated_client, regular_user, number_metric_type):

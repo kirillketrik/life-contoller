@@ -52,10 +52,15 @@ PERIOD_CHANGE_SPECS: list[tuple[str, timedelta | relativedelta]] = [
 PERIOD_CHANGE_LOOKBACK = relativedelta(years=100)
 
 
-def metric_type_list() -> QuerySet[MetricType]:
+def metric_type_list(*, search: str | None = None) -> QuerySet[MetricType]:
     """All metric types are shared, readable definitions — visible to any
-    authenticated user."""
-    return MetricType.objects.all()
+    authenticated user. `search` filters by name, same
+    `name__icontains` convention as `apps.nutrition.selectors.
+    food_item_list_for_user`/`recipe_list_for_user`."""
+    queryset = MetricType.objects.all()
+    if search:
+        queryset = queryset.filter(name__icontains=search)
+    return queryset
 
 
 def metric_type_get(*, metric_type_id: int) -> MetricType | None:
