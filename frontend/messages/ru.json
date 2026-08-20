@@ -430,13 +430,15 @@
     "foodItemHeader": "Позиция",
     "quantityHeader": "Кол-во",
     "caloriesHeader": "Калории",
+    "costHeader": "Стоимость",
     "actionsHeader": "Действия",
     "editAction": "Изменить запись",
     "recipeBadge": "рецепт",
     "statCalories": "Калории",
     "statProtein": "Белки",
     "statFat": "Жиры",
-    "statCarbs": "Углеводы"
+    "statCarbs": "Углеводы",
+    "statCost": "Стоимость"
   },
   "recipes": {
     "title": "Рецепты",
@@ -447,6 +449,7 @@
     "nameHeader": "Название",
     "servingsHeader": "Порций",
     "caloriesHeader": "Калорий/порция",
+    "costHeader": "Стоимость/порция",
     "actionsHeader": "Действия",
     "editAction": "Редактировать рецепт"
   },

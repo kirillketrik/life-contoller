@@ -66,6 +66,7 @@ export default function RecipesPage() {
               <TableHead>{t("nameHeader")}</TableHead>
               <TableHead className="text-right">{t("servingsHeader")}</TableHead>
               <TableHead className="text-right">{t("caloriesHeader")}</TableHead>
+              <TableHead className="text-right">{t("costHeader")}</TableHead>
               <TableHead className="text-right">{t("actionsHeader")}</TableHead>
             </TableRow>
           </TableHeader>
@@ -75,6 +76,9 @@ export default function RecipesPage() {
                 <TableCell className="font-medium">{item.name}</TableCell>
                 <TableCell className="text-right">{item.servings}</TableCell>
                 <TableCell className="text-right">{item.calories_per_serving}</TableCell>
+                <TableCell className="text-right">
+                  {item.cost != null ? `${(item.cost / item.servings).toFixed(2)} ₽` : "—"}
+                </TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-1">
                     <RecipeDialog
