@@ -1,9 +1,24 @@
-from rest_framework import viewsets
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
 
 from . import selectors, services
-from .models import FoodItem, MealEntry, NutrientType
-from .permissions import FoodItemPermission, MealEntryPermission, NutrientTypePermission
-from .serializers import FoodItemSerializer, MealEntrySerializer, NutrientTypeSerializer
+from .models import FoodItem, MealEntry, MealPlanEntry, NutrientType, Recipe
+from .permissions import (
+    FoodItemPermission,
+    MealEntryPermission,
+    MealPlanEntryPermission,
+    NutrientTypePermission,
+    RecipePermission,
+)
+from .serializers import (
+    DuplicateMealPlanDaySerializer,
+    FoodItemSerializer,
+    MealEntrySerializer,
+    MealPlanEntrySerializer,
+    NutrientTypeSerializer,
+    RecipeSerializer,
+)
 
 
 class NutrientTypeViewSet(viewsets.ModelViewSet):
@@ -22,6 +37,17 @@ class FoodItemViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return selectors.food_item_list_for_user(
+            user=self.request.user, search=self.request.query_params.get("search")
+        )
+
+
+class RecipeViewSet(viewsets.ModelViewSet):
+    serializer_class = RecipeSerializer
+    permission_classes = [RecipePermission]
+    queryset = Recipe.objects.none()  # required for router basename inference
+
+    def get_queryset(self):
+        return selectors.recipe_list_for_user(
             user=self.request.user, search=self.request.query_params.get("search")
         )
 
@@ -61,3 +87,44 @@ class MealEntryViewSet(viewsets.ModelViewSet):
         entry_date = instance.datetime.date()
         instance.delete()
         services.recompute_daily_nutrition_metrics(user=user, entry_date=entry_date)
+
+
+class MealPlanEntryViewSet(viewsets.ModelViewSet):
+    """Planned meals — ownership-scoped like `MealEntryViewSet`, but a plan
+    by itself never touches the daily-total materialization: only the
+    `mark_eaten` action does, by creating a real `MealEntry` (which goes
+    through the normal `MealEntryViewSet`-equivalent recompute)."""
+
+    serializer_class = MealPlanEntrySerializer
+    permission_classes = [MealPlanEntryPermission]
+    queryset = MealPlanEntry.objects.none()  # required for router basename inference
+
+    def get_queryset(self):
+        params = self.request.query_params
+        return selectors.meal_plan_entry_list_for_user(
+            user=self.request.user,
+            date=params.get("date"),
+            start_date=params.get("start_date"),
+            end_date=params.get("end_date"),
+        )
+
+    @action(detail=True, methods=["post"], url_path="mark-eaten")
+    def mark_eaten(self, request, pk=None):
+        plan_entry = self.get_object()
+        try:
+            services.mark_meal_plan_entry_eaten(plan_entry=plan_entry)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        plan_entry.refresh_from_db()
+        serializer = self.get_serializer(plan_entry)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["post"], url_path="duplicate-day")
+    def duplicate_day(self, request):
+        input_serializer = DuplicateMealPlanDaySerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        created = services.duplicate_meal_plan_day(
+            user=request.user, **input_serializer.validated_data
+        )
+        serializer = self.get_serializer(created, many=True)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)

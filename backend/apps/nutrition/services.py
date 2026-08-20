@@ -18,7 +18,8 @@ from django.utils import timezone
 
 from apps.metrics.models import MetricEntry, MetricType
 
-from .models import FoodItem, FoodNutrientValue, MealEntry
+from . import selectors
+from .models import FoodItem, FoodNutrientValue, MealEntry, MealPlanEntry, Recipe, RecipeIngredient
 
 # key -> MetricType.name of the materialized daily-total metric. Looked up by
 # name (not a hardcoded id) so this app never depends on apps.metrics
@@ -62,6 +63,34 @@ def _replace_nutrient_values(food_item: FoodItem, nutrient_values_data: list[dic
     )
 
 
+def create_recipe_with_ingredients(
+    *, validated_data: dict, ingredients_data: list[dict], user
+) -> Recipe:
+    with transaction.atomic():
+        recipe = Recipe.objects.create(owner=user, **validated_data)
+        _replace_ingredients(recipe, ingredients_data)
+    return recipe
+
+
+def update_recipe_ingredients(*, recipe: Recipe, ingredients_data: list[dict]) -> None:
+    with transaction.atomic():
+        _replace_ingredients(recipe, ingredients_data)
+
+
+def _replace_ingredients(recipe: Recipe, ingredients_data: list[dict]) -> None:
+    recipe.ingredients.all().delete()
+    RecipeIngredient.objects.bulk_create(
+        [
+            RecipeIngredient(
+                recipe=recipe,
+                food_item=item["food_item"],
+                quantity_g=item["quantity_g"],
+            )
+            for item in ingredients_data
+        ]
+    )
+
+
 def recompute_daily_nutrition_metrics(*, user, entry_date: date_cls) -> None:
     """Recomputes `entry_date`'s calorie/macro totals from `user`'s
     `MealEntry` rows and materializes them as ordinary `MetricEntry` rows on
@@ -78,17 +107,18 @@ def recompute_daily_nutrition_metrics(*, user, entry_date: date_cls) -> None:
     type that hasn't been seeded yet (see `seed_nutrition_metrics`) — same
     tolerance the formula engine already has for a formula referencing a
     metric type nobody has logged data for yet.
+
+    Sums via `selectors.meal_entry_macro_totals`, the same function
+    `MealEntrySerializer` uses — a day's total is correct whether its entries
+    log a `FoodItem` directly, a `Recipe`, or a mix of both, with no
+    special-casing here.
     """
-    entries = list(
-        MealEntry.objects.filter(owner=user, datetime__date=entry_date).select_related("food_item")
-    )
+    entries = list(selectors.meal_entry_list_for_user(user=user, entry_date=str(entry_date)))
     totals = {"calories": 0.0, "protein": 0.0, "fat": 0.0, "carbs": 0.0}
     for entry in entries:
-        factor = float(entry.quantity_g) / 100
-        totals["calories"] += float(entry.food_item.calories_per_100g) * factor
-        totals["protein"] += float(entry.food_item.protein_per_100g) * factor
-        totals["fat"] += float(entry.food_item.fat_per_100g) * factor
-        totals["carbs"] += float(entry.food_item.carbs_per_100g) * factor
+        entry_totals = selectors.meal_entry_macro_totals(entry)
+        for key in totals:
+            totals[key] += entry_totals[key]
 
     recorded_at = timezone.make_aware(
         datetime_cls.combine(entry_date, time(12, 0)), timezone.get_current_timezone()
@@ -113,3 +143,69 @@ def recompute_daily_nutrition_metrics(*, user, entry_date: date_cls) -> None:
             MetricEntry.objects.create(
                 metric_type=metric_type, owner=user, value=value, recorded_at=recorded_at
             )
+
+
+def duplicate_meal_plan_day(
+    *, user, source_date: date_cls, target_date: date_cls
+) -> list[MealPlanEntry]:
+    """Copies every one of `user`'s planned meals from `source_date` onto
+    `target_date` — purely additive: any plans already on `target_date` are
+    left untouched rather than merged or replaced, so duplicating twice, or
+    onto a day that already has plans, just adds more rows instead of
+    erroring. Carries over `meal_type`/`food_item`/`recipe`/`quantity_g`/
+    `servings` only — never `resulting_meal_entry`, since a freshly duplicated
+    plan always starts unmarked regardless of whether the source day's meal
+    was eaten. `source_date == target_date` is allowed (doubles that day's
+    plans) rather than specially rejected — an unusual but valid request, not
+    worth extra validation to prevent."""
+    source_entries = selectors.meal_plan_entry_list_for_user(user=user, date=str(source_date))
+    new_entries = [
+        MealPlanEntry(
+            owner=user,
+            date=target_date,
+            meal_type=entry.meal_type,
+            food_item=entry.food_item,
+            recipe=entry.recipe,
+            quantity_g=entry.quantity_g,
+            servings=entry.servings,
+        )
+        for entry in source_entries
+    ]
+    return MealPlanEntry.objects.bulk_create(new_entries)
+
+
+def mark_meal_plan_entry_eaten(*, plan_entry: MealPlanEntry) -> MealEntry:
+    """Converts a planned meal into a real, logged `MealEntry` — the one
+    action that makes a plan actually count. A `MealPlanEntry` by itself
+    never feeds the daily-total materialization; only the `MealEntry` this
+    creates does, through the exact same `MealEntryViewSet.perform_create`-
+    style call to `recompute_daily_nutrition_metrics` a normal logged meal
+    triggers.
+
+    Defaults the new entry's time to noon of the plan's date — same
+    "noon local time" stand-in `recompute_daily_nutrition_metrics` already
+    uses for materialized entries, since a plan only ever carries a date, not
+    a time of day. Raises `ValueError` if the plan was already marked eaten
+    (idempotency guard, same "reject a second write" shape as
+    `MetricType.is_singleton` enforcement) — the caller maps this to a 400.
+    """
+    if plan_entry.resulting_meal_entry_id is not None:
+        raise ValueError("This planned meal has already been marked as eaten.")
+
+    at = timezone.make_aware(
+        datetime_cls.combine(plan_entry.date, time(12, 0)), timezone.get_current_timezone()
+    )
+    with transaction.atomic():
+        meal_entry = MealEntry.objects.create(
+            owner=plan_entry.owner,
+            datetime=at,
+            meal_type=plan_entry.meal_type,
+            food_item=plan_entry.food_item,
+            recipe=plan_entry.recipe,
+            quantity_g=plan_entry.quantity_g,
+            servings=plan_entry.servings,
+        )
+        plan_entry.resulting_meal_entry = meal_entry
+        plan_entry.save(update_fields=["resulting_meal_entry", "updated_at"])
+    recompute_daily_nutrition_metrics(user=plan_entry.owner, entry_date=meal_entry.datetime.date())
+    return meal_entry

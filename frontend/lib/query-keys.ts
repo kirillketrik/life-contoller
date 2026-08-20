@@ -1,4 +1,4 @@
-import type { AggregateParams } from "./api";
+import type { AggregateParams, MealPlanEntryListParams } from "./api";
 
 export const METRIC_TYPES_QUERY_KEY = ["metric-types"] as const;
 
@@ -33,6 +33,15 @@ export const FOOD_ITEMS_QUERY_KEY = ["food-items"] as const;
 
 export const foodItemsQueryKey = (search?: string) => ["food-items", search ?? ""] as const;
 
+export const RECIPES_QUERY_KEY = ["recipes"] as const;
+
+export const recipesQueryKey = (search?: string) => ["recipes", search ?? ""] as const;
+
 export const MEAL_ENTRIES_QUERY_KEY = ["meal-entries"] as const;
 
 export const mealEntriesQueryKey = (date?: string) => ["meal-entries", date ?? ""] as const;
+
+export const MEAL_PLAN_ENTRIES_QUERY_KEY = ["meal-plan-entries"] as const;
+
+export const mealPlanEntriesQueryKey = (params: MealPlanEntryListParams) =>
+  ["meal-plan-entries", params.date ?? "", params.startDate ?? "", params.endDate ?? ""] as const;

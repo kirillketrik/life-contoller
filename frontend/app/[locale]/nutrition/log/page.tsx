@@ -9,6 +9,7 @@ import { useAuth } from "@/components/auth-provider";
 import { SummaryStat } from "@/components/metrics/summary-stat";
 import { DeleteMealEntryButton } from "@/components/nutrition/delete-meal-entry-button";
 import { MealEntryDialog } from "@/components/nutrition/meal-entry-dialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -50,6 +51,12 @@ export default function NutritionLogPage() {
     }),
     { calories: 0, protein: 0, fat: 0, carbs: 0 },
   );
+  // Cost is optional per entry — a day with no cost recorded at all shows
+  // "—" (via SummaryStat's null handling) rather than a misleading "0 ₽",
+  // but a day with at least one costed entry sums the rest as 0.
+  const totalCost = entries.some((entry) => entry.cost !== null)
+    ? entries.reduce((sum, entry) => sum + (entry.cost ?? 0), 0)
+    : null;
 
   return (
     <div className="space-y-6">
@@ -68,11 +75,12 @@ export default function NutritionLogPage() {
         className="max-w-xs"
       />
 
-      <div className="grid gap-3 sm:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-5">
         <SummaryStat label={t("statCalories")} value={totals.calories} unit="ккал" />
         <SummaryStat label={t("statProtein")} value={totals.protein} unit="г" />
         <SummaryStat label={t("statFat")} value={totals.fat} unit="г" />
         <SummaryStat label={t("statCarbs")} value={totals.carbs} unit="г" />
+        <SummaryStat label={t("statCost")} value={totalCost} unit="₽" />
       </div>
 
       {isLoading ? (
@@ -91,6 +99,7 @@ export default function NutritionLogPage() {
               <TableHead>{t("foodItemHeader")}</TableHead>
               <TableHead className="text-right">{t("quantityHeader")}</TableHead>
               <TableHead className="text-right">{t("caloriesHeader")}</TableHead>
+              <TableHead className="text-right">{t("costHeader")}</TableHead>
               <TableHead className="text-right">{t("actionsHeader")}</TableHead>
             </TableRow>
           </TableHeader>
@@ -98,9 +107,19 @@ export default function NutritionLogPage() {
             {entries.map((entry) => (
               <TableRow key={entry.id}>
                 <TableCell>{tMealType(entry.meal_type)}</TableCell>
-                <TableCell className="font-medium">{entry.food_item_name}</TableCell>
-                <TableCell className="text-right">{entry.quantity_g} г</TableCell>
+                <TableCell className="font-medium">
+                  <div className="flex items-center gap-2">
+                    {entry.food_item_name ?? entry.recipe_name}
+                    {entry.recipe_name && <Badge variant="outline">{t("recipeBadge")}</Badge>}
+                  </div>
+                </TableCell>
+                <TableCell className="text-right">
+                  {entry.food_item_name ? `${entry.quantity_g} г` : `× ${entry.servings}`}
+                </TableCell>
                 <TableCell className="text-right">{entry.calories}</TableCell>
+                <TableCell className="text-right">
+                  {entry.cost != null ? `${entry.cost} ₽` : "—"}
+                </TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end gap-1">
                     <MealEntryDialog

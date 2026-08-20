@@ -52,3 +52,27 @@ class MealEntryPermission(BasePermission):
 
     def has_object_permission(self, request, view, obj) -> bool:
         return obj.owner_id == request.user.id
+
+
+class RecipePermission(BasePermission):
+    """Every authenticated user manages their own recipes only — same
+    ownership pattern as FoodItemPermission."""
+
+    def has_permission(self, request, view) -> bool:
+        return bool(request.user and request.user.is_authenticated)
+
+    def has_object_permission(self, request, view, obj) -> bool:
+        return obj.owner_id == request.user.id
+
+
+class MealPlanEntryPermission(BasePermission):
+    """Every authenticated user manages their own planned meals only — same
+    ownership pattern as MealEntryPermission (incl. the mark-eaten action,
+    which is object-scoped via the same get_object() call any other detail
+    action uses)."""
+
+    def has_permission(self, request, view) -> bool:
+        return bool(request.user and request.user.is_authenticated)
+
+    def has_object_permission(self, request, view, obj) -> bool:
+        return obj.owner_id == request.user.id

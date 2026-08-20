@@ -24,12 +24,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ApiError, foodItems, mealEntries, recipes } from "@/lib/api";
-import { FOOD_ITEMS_QUERY_KEY, MEAL_ENTRIES_QUERY_KEY, RECIPES_QUERY_KEY } from "@/lib/query-keys";
+import { ApiError, foodItems, mealPlanEntries, recipes } from "@/lib/api";
+import { FOOD_ITEMS_QUERY_KEY, MEAL_PLAN_ENTRIES_QUERY_KEY, RECIPES_QUERY_KEY } from "@/lib/query-keys";
 import {
-  type CreateMealEntryInput,
-  createMealEntrySchema,
-  type MealEntry,
+  type CreateMealPlanEntryInput,
+  createMealPlanEntrySchema,
+  type MealPlanEntry,
   type MealType,
 } from "@/lib/types";
 
@@ -37,24 +37,16 @@ const MEAL_TYPES: MealType[] = ["breakfast", "lunch", "dinner", "snack"];
 
 type ItemType = "foodItem" | "recipe";
 
-function toLocalInputValue(date: Date): string {
-  const offset = date.getTimezoneOffset();
-  const local = new Date(date.getTime() - offset * 60_000);
-  return local.toISOString().slice(0, 16);
-}
-
-function initialValues(entry: MealEntry | undefined, defaultDate: string | undefined) {
-  const defaultDatetime = defaultDate ? new Date(`${defaultDate}T12:00:00`) : new Date();
+function initialValues(entry: MealPlanEntry | undefined, defaultDate: string | undefined) {
   const itemType: ItemType = entry?.recipe ? "recipe" : "foodItem";
   return {
-    datetime: entry ? toLocalInputValue(new Date(entry.datetime)) : toLocalInputValue(defaultDatetime),
+    date: entry?.date ?? defaultDate ?? new Date().toISOString().slice(0, 10),
     mealType: (entry?.meal_type ?? "breakfast") as MealType,
     itemType,
     foodItemId: entry?.food_item ? String(entry.food_item) : "",
     recipeId: entry?.recipe ? String(entry.recipe) : "",
     quantityG: entry?.quantity_g != null ? String(entry.quantity_g) : "",
     servings: entry?.servings != null ? String(entry.servings) : "",
-    cost: entry?.cost != null ? String(entry.cost) : "",
   };
 }
 
@@ -62,23 +54,24 @@ function parseDecimal(raw: string): number {
   return Number(raw.replace(",", "."));
 }
 
-/** Logs a new meal, or edits an existing entry when `entry` is passed — same
- * value-branching-by-presence-of-prop pattern as MetricEntryDialog/
- * FoodItemDialog. `defaultDate` seeds the datetime when creating from a
- * specific day (the food diary's selected date, not necessarily today).
- * `itemType` picks which of food_item/recipe this entry logs — mirrors the
- * backend's "exactly one of the two" rule, with quantity_g shown for a food
- * item and servings shown for a recipe. */
-export function MealEntryDialog({
+/** Plans a new meal for a future day, or edits an existing plan when `entry`
+ * is passed — same value-branching-by-presence-of-prop pattern as
+ * MealEntryDialog, which this mirrors closely (itemType toggle, food-item/
+ * recipe picker, quantity/servings input). The two differences: a `date`
+ * input instead of `datetime`, and no `cost` field (not part of the
+ * MealPlanEntry model). `defaultDate` seeds the date when planning from a
+ * specific day in the week view. */
+export function MealPlanEntryDialog({
   entry,
   defaultDate,
   trigger,
 }: {
-  entry?: MealEntry;
+  entry?: MealPlanEntry;
   defaultDate?: string;
   trigger?: ReactElement;
 }) {
-  const t = useTranslations("mealEntry");
+  const t = useTranslations("mealPlanEntry");
+  const tField = useTranslations("mealEntry");
   const tMealType = useTranslations("mealType");
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -104,36 +97,35 @@ export function MealEntryDialog({
   }
 
   const mutation = useMutation({
-    mutationFn: (data: CreateMealEntryInput) =>
-      entry ? mealEntries.update(entry.id, data) : mealEntries.create(data),
+    mutationFn: (data: CreateMealPlanEntryInput) =>
+      entry ? mealPlanEntries.update(entry.id, data) : mealPlanEntries.create(data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: MEAL_ENTRIES_QUERY_KEY });
-      toast.success(entry ? t("updated") : t("logged"));
+      queryClient.invalidateQueries({ queryKey: MEAL_PLAN_ENTRIES_QUERY_KEY });
+      toast.success(entry ? t("updated") : t("created"));
       setOpen(false);
     },
     onError: (error) => {
-      toast.error(error instanceof ApiError ? error.message : entry ? t("updateFailed") : t("logFailed"));
+      toast.error(error instanceof ApiError ? error.message : entry ? t("updateFailed") : t("createFailed"));
     },
   });
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     if (values.itemType === "foodItem" && !values.foodItemId) {
-      toast.error(t("foodItemRequired"));
+      toast.error(tField("foodItemRequired"));
       return;
     }
     if (values.itemType === "recipe" && !values.recipeId) {
-      toast.error(t("recipeRequired"));
+      toast.error(tField("recipeRequired"));
       return;
     }
-    const parsed = createMealEntrySchema.safeParse({
-      datetime: new Date(values.datetime).toISOString(),
+    const parsed = createMealPlanEntrySchema.safeParse({
+      date: values.date,
       meal_type: values.mealType,
-      food_item: values.itemType === "foodItem" ? Number(values.foodItemId) : null,
-      recipe: values.itemType === "recipe" ? Number(values.recipeId) : null,
+      food_item: values.itemType === "foodItem" ? Number(values.foodItemId) || null : null,
+      recipe: values.itemType === "recipe" ? Number(values.recipeId) || null : null,
       quantity_g: values.itemType === "foodItem" ? parseDecimal(values.quantityG) : null,
       servings: values.itemType === "recipe" ? parseDecimal(values.servings) : null,
-      cost: values.cost.trim() ? parseDecimal(values.cost) : null,
     });
     if (!parsed.success) {
       toast.error(parsed.error.issues[0]?.message ?? t("invalid"));
@@ -148,76 +140,21 @@ export function MealEntryDialog({
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>{entry ? t("editTitle") : t("logTitle")}</DialogTitle>
-            <DialogDescription>{entry ? t("editDescription") : t("logDescription")}</DialogDescription>
+            <DialogTitle>{entry ? t("editTitle") : t("createTitle")}</DialogTitle>
+            <DialogDescription>{entry ? t("editDescription") : t("createDescription")}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="space-y-2">
-              <Label>{t("itemType")}</Label>
-              <Select
-                items={{ foodItem: t("itemTypeFoodItem"), recipe: t("itemTypeRecipe") }}
-                value={values.itemType}
-                onValueChange={(v) =>
-                  setValues((prev) => ({ ...prev, itemType: (v ?? "foodItem") as ItemType }))
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="foodItem">{t("itemTypeFoodItem")}</SelectItem>
-                  <SelectItem value="recipe">{t("itemTypeRecipe")}</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label>{t("date")}</Label>
+              <Input
+                type="date"
+                value={values.date}
+                onChange={(e) => setValues((v) => ({ ...v, date: e.target.value }))}
+                required
+              />
             </div>
-            {values.itemType === "foodItem" ? (
-              <div className="space-y-2">
-                <Label>{t("foodItem")}</Label>
-                <Select
-                  items={Object.fromEntries(
-                    availableFoodItems.map((item) => [
-                      String(item.id),
-                      item.brand ? `${item.name} (${item.brand})` : item.name,
-                    ]),
-                  )}
-                  value={values.foodItemId}
-                  onValueChange={(v) => setValues((prev) => ({ ...prev, foodItemId: v ?? "" }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder={t("foodItemPlaceholder")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableFoodItems.map((item) => (
-                      <SelectItem key={item.id} value={String(item.id)}>
-                        {item.brand ? `${item.name} (${item.brand})` : item.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <Label>{t("recipe")}</Label>
-                <Select
-                  items={Object.fromEntries(availableRecipes.map((r) => [String(r.id), r.name]))}
-                  value={values.recipeId}
-                  onValueChange={(v) => setValues((prev) => ({ ...prev, recipeId: v ?? "" }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder={t("recipePlaceholder")} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableRecipes.map((r) => (
-                      <SelectItem key={r.id} value={String(r.id)}>
-                        {r.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
             <div className="space-y-2">
-              <Label>{t("mealType")}</Label>
+              <Label>{tField("mealType")}</Label>
               <Select
                 items={Object.fromEntries(MEAL_TYPES.map((mt) => [mt, tMealType(mt)]))}
                 value={values.mealType}
@@ -235,11 +172,75 @@ export function MealEntryDialog({
                 </SelectContent>
               </Select>
             </div>
+            <div className="space-y-2">
+              <Label>{tField("itemType")}</Label>
+              <Select
+                items={{ foodItem: tField("itemTypeFoodItem"), recipe: tField("itemTypeRecipe") }}
+                value={values.itemType}
+                onValueChange={(v) =>
+                  setValues((prev) => ({ ...prev, itemType: (v ?? "foodItem") as ItemType }))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="foodItem">{tField("itemTypeFoodItem")}</SelectItem>
+                  <SelectItem value="recipe">{tField("itemTypeRecipe")}</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             {values.itemType === "foodItem" ? (
               <div className="space-y-2">
-                <Label htmlFor="me-quantity">{t("quantity")}</Label>
+                <Label>{tField("foodItem")}</Label>
+                <Select
+                  items={Object.fromEntries(
+                    availableFoodItems.map((item) => [
+                      String(item.id),
+                      item.brand ? `${item.name} (${item.brand})` : item.name,
+                    ]),
+                  )}
+                  value={values.foodItemId}
+                  onValueChange={(v) => setValues((prev) => ({ ...prev, foodItemId: v ?? "" }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={tField("foodItemPlaceholder")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableFoodItems.map((item) => (
+                      <SelectItem key={item.id} value={String(item.id)}>
+                        {item.brand ? `${item.name} (${item.brand})` : item.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Label>{tField("recipe")}</Label>
+                <Select
+                  items={Object.fromEntries(availableRecipes.map((r) => [String(r.id), r.name]))}
+                  value={values.recipeId}
+                  onValueChange={(v) => setValues((prev) => ({ ...prev, recipeId: v ?? "" }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={tField("recipePlaceholder")} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {availableRecipes.map((r) => (
+                      <SelectItem key={r.id} value={String(r.id)}>
+                        {r.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+            {values.itemType === "foodItem" ? (
+              <div className="space-y-2">
+                <Label htmlFor="mpe-quantity">{tField("quantity")}</Label>
                 <Input
-                  id="me-quantity"
+                  id="mpe-quantity"
                   type="text"
                   inputMode="decimal"
                   pattern="[0-9]*[.,]?[0-9]*"
@@ -250,9 +251,9 @@ export function MealEntryDialog({
               </div>
             ) : (
               <div className="space-y-2">
-                <Label htmlFor="me-servings">{t("servings")}</Label>
+                <Label htmlFor="mpe-servings">{tField("servings")}</Label>
                 <Input
-                  id="me-servings"
+                  id="mpe-servings"
                   type="text"
                   inputMode="decimal"
                   pattern="[0-9]*[.,]?[0-9]*"
@@ -262,27 +263,6 @@ export function MealEntryDialog({
                 />
               </div>
             )}
-            <div className="space-y-2">
-              <Label htmlFor="me-datetime">{t("datetime")}</Label>
-              <Input
-                id="me-datetime"
-                type="datetime-local"
-                value={values.datetime}
-                onChange={(e) => setValues((v) => ({ ...v, datetime: e.target.value }))}
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="me-cost">{t("cost")}</Label>
-              <Input
-                id="me-cost"
-                type="text"
-                inputMode="decimal"
-                pattern="[0-9]*[.,]?[0-9]*"
-                value={values.cost}
-                onChange={(e) => setValues((v) => ({ ...v, cost: e.target.value }))}
-              />
-            </div>
           </div>
           <DialogFooter>
             <Button type="submit" disabled={mutation.isPending}>
