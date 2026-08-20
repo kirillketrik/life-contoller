@@ -3,6 +3,7 @@
 import {
   Apple,
   BookOpen,
+  CalendarClock,
   ChefHat,
   ChevronsUpDown,
   LayoutDashboard,
@@ -127,6 +128,16 @@ export function AppSidebar() {
                     >
                       <BookOpen />
                       <span>{t("nutritionLog")}</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      render={<Link href="/nutrition/plan" />}
+                      isActive={pathname.startsWith("/nutrition/plan")}
+                      tooltip={t("mealPlan")}
+                    >
+                      <CalendarClock />
+                      <span>{t("mealPlan")}</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                   <SidebarMenuItem>

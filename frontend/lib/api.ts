@@ -11,6 +11,7 @@ import {
   type CreateFoodItemInput,
   type CreateFormulaDefinitionInput,
   type CreateMealEntryInput,
+  type CreateMealPlanEntryInput,
   type CreateMetricEntryInput,
   type CreateMetricImportSettingsInput,
   type CreateMetricThresholdInput,
@@ -33,6 +34,8 @@ import {
   type LoginInput,
   type MealEntry,
   mealEntrySchema,
+  type MealPlanEntry,
+  mealPlanEntrySchema,
   type MetricEntry,
   metricEntrySchema,
   type MetricImportSettings,
@@ -311,6 +314,39 @@ export const mealEntries = {
       body: JSON.stringify(data),
     }),
   delete: (id: number) => requestVoid(`/api/meal-entries/${id}/`, { method: "DELETE" }),
+};
+
+export interface MealPlanEntryListParams {
+  date?: string;
+  startDate?: string;
+  endDate?: string;
+}
+
+export const mealPlanEntries = {
+  list: (params: MealPlanEntryListParams = {}): Promise<Paginated<MealPlanEntry>> => {
+    const query = new URLSearchParams();
+    if (params.date) query.set("date", params.date);
+    if (params.startDate) query.set("start_date", params.startDate);
+    if (params.endDate) query.set("end_date", params.endDate);
+    const qs = query.toString();
+    return request(
+      paginatedSchema(mealPlanEntrySchema),
+      qs ? `/api/meal-plan-entries/?${qs}` : "/api/meal-plan-entries/",
+    );
+  },
+  create: (data: CreateMealPlanEntryInput): Promise<MealPlanEntry> =>
+    request(mealPlanEntrySchema, "/api/meal-plan-entries/", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  update: (id: number, data: CreateMealPlanEntryInput): Promise<MealPlanEntry> =>
+    request(mealPlanEntrySchema, `/api/meal-plan-entries/${id}/`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  delete: (id: number) => requestVoid(`/api/meal-plan-entries/${id}/`, { method: "DELETE" }),
+  markEaten: (id: number): Promise<MealPlanEntry> =>
+    request(mealPlanEntrySchema, `/api/meal-plan-entries/${id}/mark-eaten/`, { method: "POST" }),
 };
 
 export const formulaDefinitions = {

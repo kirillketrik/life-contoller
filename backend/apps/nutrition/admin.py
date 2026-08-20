@@ -1,6 +1,14 @@
 from django.contrib import admin
 
-from .models import FoodItem, FoodNutrientValue, MealEntry, NutrientType, Recipe, RecipeIngredient
+from .models import (
+    FoodItem,
+    FoodNutrientValue,
+    MealEntry,
+    MealPlanEntry,
+    NutrientType,
+    Recipe,
+    RecipeIngredient,
+)
 
 
 @admin.register(NutrientType)
@@ -64,3 +72,19 @@ class MealEntryAdmin(admin.ModelAdmin):
     search_fields = ["owner__username", "food_item__name", "recipe__name"]
     autocomplete_fields = ["owner", "food_item", "recipe"]
     date_hierarchy = "datetime"
+
+
+@admin.register(MealPlanEntry)
+class MealPlanEntryAdmin(admin.ModelAdmin):
+    list_display = [
+        "food_item",
+        "recipe",
+        "owner",
+        "meal_type",
+        "date",
+        "resulting_meal_entry",
+    ]
+    list_filter = ["meal_type"]
+    search_fields = ["owner__username", "food_item__name", "recipe__name"]
+    autocomplete_fields = ["owner", "food_item", "recipe", "resulting_meal_entry"]
+    date_hierarchy = "date"
