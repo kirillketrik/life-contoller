@@ -1,7 +1,15 @@
 from rest_framework import serializers
 
 from . import selectors, services
-from .models import FoodItem, FoodNutrientValue, MealEntry, NutrientType, Recipe, RecipeIngredient
+from .models import (
+    FoodItem,
+    FoodNutrientValue,
+    MealEntry,
+    MealPlanEntry,
+    NutrientType,
+    Recipe,
+    RecipeIngredient,
+)
 
 
 class NutrientTypeSerializer(serializers.ModelSerializer):
@@ -190,7 +198,43 @@ class RecipeSerializer(serializers.ModelSerializer):
         return instance
 
 
-class MealEntrySerializer(serializers.ModelSerializer):
+class ExactlyOneOfFoodOrRecipeMixin:
+    """Shared `validate()` for a serializer whose model has `food_item`/
+    `recipe` (exactly one set) plus `quantity_g`/`servings` — `MealEntry` and
+    `MealPlanEntry` both follow this shape, so the ownership/exactly-one/
+    positive-amount rule lives here once rather than risking the two
+    drifting apart."""
+
+    def validate(self, attrs):
+        food_item = attrs.get("food_item", getattr(self.instance, "food_item", None))
+        recipe = attrs.get("recipe", getattr(self.instance, "recipe", None))
+        if bool(food_item) == bool(recipe):
+            raise serializers.ValidationError(
+                "Provide exactly one of food_item or recipe, not both or neither."
+            )
+
+        user = self.context["request"].user
+        if food_item is not None and food_item.owner_id != user.id:
+            raise serializers.ValidationError(
+                {"food_item": "You can only use your own food items."}
+            )
+        if recipe is not None and recipe.owner_id != user.id:
+            raise serializers.ValidationError({"recipe": "You can only use your own recipes."})
+
+        quantity_g = attrs.get("quantity_g", getattr(self.instance, "quantity_g", None))
+        servings = attrs.get("servings", getattr(self.instance, "servings", None))
+        if food_item is not None and (quantity_g is None or quantity_g <= 0):
+            raise serializers.ValidationError({"quantity_g": "Quantity must be greater than zero."})
+        if recipe is not None and (servings is None or servings <= 0):
+            raise serializers.ValidationError({"servings": "Servings must be greater than zero."})
+        return attrs
+
+    def create(self, validated_data):
+        validated_data.setdefault("owner", self.context["request"].user)
+        return super().create(validated_data)
+
+
+class MealEntrySerializer(ExactlyOneOfFoodOrRecipeMixin, serializers.ModelSerializer):
     """`calories`/`protein`/`fat`/`carbs` are computed via
     `selectors.meal_entry_macro_totals`, which works uniformly whether this
     entry logs a `FoodItem` directly or a `Recipe` — never stored, same
@@ -198,11 +242,11 @@ class MealEntrySerializer(serializers.ModelSerializer):
     already follow, so they can never drift out of sync with whichever item
     they reference.
 
-    Exactly one of `food_item`/`recipe` must be set (enforced in `validate`,
-    mirrored by the model's `mealentry_exactly_one_of_food_or_recipe`
-    `CheckConstraint` — same defense-in-depth pattern used elsewhere in this
-    app): `quantity_g` is required for a food-item entry, `servings` for a
-    recipe entry."""
+    Exactly one of `food_item`/`recipe` must be set (enforced by
+    `ExactlyOneOfFoodOrRecipeMixin.validate`, mirrored by the model's
+    `mealentry_exactly_one_of_food_or_recipe` `CheckConstraint` — same
+    defense-in-depth pattern used elsewhere in this app): `quantity_g` is
+    required for a food-item entry, `servings` for a recipe entry."""
 
     owner = serializers.PrimaryKeyRelatedField(read_only=True)
     food_item_name = serializers.SerializerMethodField()
@@ -253,32 +297,76 @@ class MealEntrySerializer(serializers.ModelSerializer):
     def get_carbs(self, obj: MealEntry) -> float:
         return selectors.meal_entry_macro_totals(obj)["carbs"]
 
-    def validate(self, attrs):
-        food_item = attrs.get("food_item", getattr(self.instance, "food_item", None))
-        recipe = attrs.get("recipe", getattr(self.instance, "recipe", None))
-        if bool(food_item) == bool(recipe):
-            raise serializers.ValidationError(
-                "Provide exactly one of food_item or recipe, not both or neither."
-            )
 
-        user = self.context["request"].user
-        if food_item is not None and food_item.owner_id != user.id:
-            raise serializers.ValidationError(
-                {"food_item": "You can only log meals against your own food items."}
-            )
-        if recipe is not None and recipe.owner_id != user.id:
-            raise serializers.ValidationError(
-                {"recipe": "You can only log meals against your own recipes."}
-            )
+class MealPlanEntrySerializer(ExactlyOneOfFoodOrRecipeMixin, serializers.ModelSerializer):
+    """The "schedule ahead" counterpart to `MealEntrySerializer` — same
+    exactly-one-of-food-or-recipe rule (via the shared mixin), same computed
+    calorie/macro preview (`selectors.meal_entry_macro_totals` works
+    unmodified here, see its docstring), but keyed by `date` instead of
+    `datetime`. `is_eaten`/`resulting_meal_entry` are read-only: the only way
+    to set them is `POST .../mark-eaten/` (`MealPlanEntryViewSet.mark_eaten`
+    → `services.mark_meal_plan_entry_eaten`), never a plain `PATCH` — marking
+    a plan eaten has a real side effect (creating a `MealEntry` and
+    recomputing that day's totals) that a generic field update shouldn't be
+    able to trigger implicitly."""
 
-        quantity_g = attrs.get("quantity_g", getattr(self.instance, "quantity_g", None))
-        servings = attrs.get("servings", getattr(self.instance, "servings", None))
-        if food_item is not None and (quantity_g is None or quantity_g <= 0):
-            raise serializers.ValidationError({"quantity_g": "Quantity must be greater than zero."})
-        if recipe is not None and (servings is None or servings <= 0):
-            raise serializers.ValidationError({"servings": "Servings must be greater than zero."})
-        return attrs
+    owner = serializers.PrimaryKeyRelatedField(read_only=True)
+    food_item_name = serializers.SerializerMethodField()
+    recipe_name = serializers.SerializerMethodField()
+    calories = serializers.SerializerMethodField()
+    protein = serializers.SerializerMethodField()
+    fat = serializers.SerializerMethodField()
+    carbs = serializers.SerializerMethodField()
+    is_eaten = serializers.SerializerMethodField()
 
-    def create(self, validated_data):
-        validated_data.setdefault("owner", self.context["request"].user)
-        return super().create(validated_data)
+    class Meta:
+        model = MealPlanEntry
+        fields = [
+            "id",
+            "owner",
+            "date",
+            "meal_type",
+            "food_item",
+            "food_item_name",
+            "recipe",
+            "recipe_name",
+            "quantity_g",
+            "servings",
+            "calories",
+            "protein",
+            "fat",
+            "carbs",
+            "is_eaten",
+            "resulting_meal_entry",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "owner",
+            "is_eaten",
+            "resulting_meal_entry",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_food_item_name(self, obj: MealPlanEntry) -> str | None:
+        return obj.food_item.name if obj.food_item_id else None
+
+    def get_recipe_name(self, obj: MealPlanEntry) -> str | None:
+        return obj.recipe.name if obj.recipe_id else None
+
+    def get_calories(self, obj: MealPlanEntry) -> float:
+        return selectors.meal_entry_macro_totals(obj)["calories"]
+
+    def get_protein(self, obj: MealPlanEntry) -> float:
+        return selectors.meal_entry_macro_totals(obj)["protein"]
+
+    def get_fat(self, obj: MealPlanEntry) -> float:
+        return selectors.meal_entry_macro_totals(obj)["fat"]
+
+    def get_carbs(self, obj: MealPlanEntry) -> float:
+        return selectors.meal_entry_macro_totals(obj)["carbs"]
+
+    def get_is_eaten(self, obj: MealPlanEntry) -> bool:
+        return obj.resulting_meal_entry_id is not None

@@ -1,16 +1,20 @@
 from rest_framework import viewsets
+from rest_framework.decorators import action
+from rest_framework.response import Response
 
 from . import selectors, services
-from .models import FoodItem, MealEntry, NutrientType, Recipe
+from .models import FoodItem, MealEntry, MealPlanEntry, NutrientType, Recipe
 from .permissions import (
     FoodItemPermission,
     MealEntryPermission,
+    MealPlanEntryPermission,
     NutrientTypePermission,
     RecipePermission,
 )
 from .serializers import (
     FoodItemSerializer,
     MealEntrySerializer,
+    MealPlanEntrySerializer,
     NutrientTypeSerializer,
     RecipeSerializer,
 )
@@ -82,3 +86,34 @@ class MealEntryViewSet(viewsets.ModelViewSet):
         entry_date = instance.datetime.date()
         instance.delete()
         services.recompute_daily_nutrition_metrics(user=user, entry_date=entry_date)
+
+
+class MealPlanEntryViewSet(viewsets.ModelViewSet):
+    """Planned meals — ownership-scoped like `MealEntryViewSet`, but a plan
+    by itself never touches the daily-total materialization: only the
+    `mark_eaten` action does, by creating a real `MealEntry` (which goes
+    through the normal `MealEntryViewSet`-equivalent recompute)."""
+
+    serializer_class = MealPlanEntrySerializer
+    permission_classes = [MealPlanEntryPermission]
+    queryset = MealPlanEntry.objects.none()  # required for router basename inference
+
+    def get_queryset(self):
+        params = self.request.query_params
+        return selectors.meal_plan_entry_list_for_user(
+            user=self.request.user,
+            date=params.get("date"),
+            start_date=params.get("start_date"),
+            end_date=params.get("end_date"),
+        )
+
+    @action(detail=True, methods=["post"], url_path="mark-eaten")
+    def mark_eaten(self, request, pk=None):
+        plan_entry = self.get_object()
+        try:
+            services.mark_meal_plan_entry_eaten(plan_entry=plan_entry)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=400)
+        plan_entry.refresh_from_db()
+        serializer = self.get_serializer(plan_entry)
+        return Response(serializer.data)

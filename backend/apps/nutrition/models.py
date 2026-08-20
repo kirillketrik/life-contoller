@@ -217,3 +217,71 @@ class MealEntry(models.Model):
     def __str__(self) -> str:
         item_name = self.food_item.name if self.food_item_id else self.recipe.name
         return f"{item_name} @ {self.datetime:%Y-%m-%d %H:%M} ({self.owner})"
+
+
+class MealPlanEntry(models.Model):
+    """A meal planned for a (usually future) date but not yet eaten — the
+    "schedule ahead of time" counterpart to `MealEntry`. Same shape as
+    `MealEntry` (exactly one of `food_item`/`recipe`, `quantity_g` for a
+    food item or `servings` for a recipe, same `CheckConstraint` + serializer
+    validation), but keyed by `date` rather than `datetime`: a plan is a
+    day-level intention ("lunch on the 25th"), not a timestamped event.
+
+    A plan is "eaten" iff `resulting_meal_entry` is set — there's no
+    separate boolean to keep in sync with it. `services.
+    mark_meal_plan_entry_eaten` is the only path that sets it: it creates a
+    real `MealEntry` (defaulting to noon of the plan's date, same convention
+    `recompute_daily_nutrition_metrics` already uses) and links it here,
+    which is what makes the plan's meal actually count toward that day's
+    materialized nutrition totals — a plan by itself never does. `SET_NULL`
+    (not `CASCADE`) so deleting the resulting `MealEntry` later (e.g. via the
+    normal food-diary edit flow) doesn't delete the plan record too — it just
+    reverts to "not eaten," self-healing the same way other materialized
+    state in this app already does rather than needing an explicit "unmark"
+    action.
+    """
+
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="meal_plan_entries"
+    )
+    date = models.DateField()
+    meal_type = models.CharField(max_length=10, choices=MealType.choices)
+    food_item = models.ForeignKey(
+        FoodItem,
+        on_delete=models.PROTECT,
+        related_name="meal_plan_entries",
+        null=True,
+        blank=True,
+    )
+    recipe = models.ForeignKey(
+        Recipe, on_delete=models.PROTECT, related_name="meal_plan_entries", null=True, blank=True
+    )
+    quantity_g = models.DecimalField(max_digits=7, decimal_places=2, null=True, blank=True)
+    servings = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    resulting_meal_entry = models.OneToOneField(
+        MealEntry,
+        on_delete=models.SET_NULL,
+        related_name="source_plan_entry",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["date", "meal_type"]
+        verbose_name_plural = "meal plan entries"
+        indexes = [models.Index(fields=["owner", "date"])]
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(food_item__isnull=False, recipe__isnull=True)
+                    | models.Q(food_item__isnull=True, recipe__isnull=False)
+                ),
+                name="mealplanentry_exactly_one_of_food_or_recipe",
+            )
+        ]
+
+    def __str__(self) -> str:
+        item_name = self.food_item.name if self.food_item_id else self.recipe.name
+        return f"{item_name} planned for {self.date} ({self.owner})"

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from django.db.models import QuerySet
 
-from .models import FoodItem, MealEntry, NutrientType, Recipe
+from .models import FoodItem, MealEntry, MealPlanEntry, NutrientType, Recipe
 
 
 def nutrient_type_list() -> QuerySet[NutrientType]:
@@ -108,9 +108,43 @@ def meal_entry_macro_totals(meal_entry: MealEntry) -> dict[str, float]:
     """Works uniformly for a food-item-based or recipe-based entry — the one
     place both are translated into calories/protein/fat/carbs, reused by
     `MealEntrySerializer` and `services.recompute_daily_nutrition_metrics`
-    so the two can never compute a meal's totals differently."""
+    so the two can never compute a meal's totals differently.
+
+    Only reads `food_item_id`/`food_item`/`recipe`/`quantity_g`/`servings` —
+    the exact same attributes `MealPlanEntry` has — so this same function
+    also powers `MealPlanEntrySerializer`'s calorie/macro preview with no
+    duplicate arithmetic, despite the type hint below."""
     if meal_entry.food_item_id is not None:
         return food_item_macro_totals(meal_entry.food_item, meal_entry.quantity_g)
     per_serving = recipe_macro_totals_per_serving(meal_entry.recipe)
     servings_eaten = float(meal_entry.servings)
     return {key: round(value * servings_eaten, 2) for key, value in per_serving.items()}
+
+
+def meal_plan_entry_list_for_user(
+    *,
+    user,
+    date: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> QuerySet[MealPlanEntry]:
+    """Planned meals owned by `user` only — ownership, same as `MealEntry`.
+    `date` narrows to one day (mirrors `meal_entry_list_for_user`'s
+    `entry_date`); `start_date`/`end_date` instead narrow to an inclusive
+    range, for a week-at-a-glance planning view. `recipe__ingredients__
+    food_item` is prefetched for the same N+1-avoidance reason as
+    `meal_entry_list_for_user`."""
+    queryset = MealPlanEntry.objects.select_related(
+        "food_item", "recipe", "resulting_meal_entry"
+    ).prefetch_related("recipe__ingredients__food_item").filter(owner=user)
+    if date:
+        queryset = queryset.filter(date=date)
+    if start_date:
+        queryset = queryset.filter(date__gte=start_date)
+    if end_date:
+        queryset = queryset.filter(date__lte=end_date)
+    return queryset
+
+
+def meal_plan_entry_get_for_user(*, user, plan_entry_id: int) -> MealPlanEntry | None:
+    return meal_plan_entry_list_for_user(user=user).filter(id=plan_entry_id).first()

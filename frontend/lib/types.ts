@@ -597,3 +597,47 @@ export const createMealEntrySchema = z
     path: ["food_item"],
   });
 export type CreateMealEntryInput = z.infer<typeof createMealEntrySchema>;
+
+/** A meal scheduled for a future (or past) date but not yet eaten — the
+ * "plan ahead" counterpart to `MealEntry`. `is_eaten`/`resulting_meal_entry`
+ * are read-only: they only change via the mark-eaten action, never a plain
+ * PATCH (see `apps.nutrition.serializers.MealPlanEntrySerializer`). */
+export const mealPlanEntrySchema = z.object({
+  id: z.number(),
+  owner: z.number(),
+  date: z.string(),
+  meal_type: mealTypeSchema,
+  food_item: z.number().nullable(),
+  food_item_name: z.string().nullable(),
+  recipe: z.number().nullable(),
+  recipe_name: z.string().nullable(),
+  quantity_g: decimalStringSchema.nullable(),
+  servings: decimalStringSchema.nullable(),
+  calories: decimalStringSchema,
+  protein: decimalStringSchema,
+  fat: decimalStringSchema,
+  carbs: decimalStringSchema,
+  is_eaten: z.boolean(),
+  resulting_meal_entry: z.number().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+export type MealPlanEntry = z.infer<typeof mealPlanEntrySchema>;
+
+/** Exactly one of `food_item`/`recipe` — mirrors the backend's
+ * `mealplanentry_exactly_one_of_food_or_recipe` CheckConstraint, same shape
+ * as `createMealEntrySchema` but keyed by `date` instead of `datetime`. */
+export const createMealPlanEntrySchema = z
+  .object({
+    date: z.string(),
+    meal_type: mealTypeSchema,
+    food_item: z.number().nullable().optional(),
+    recipe: z.number().nullable().optional(),
+    quantity_g: z.number().positive().nullable().optional(),
+    servings: z.number().positive().nullable().optional(),
+  })
+  .refine((data) => Boolean(data.food_item) !== Boolean(data.recipe), {
+    message: "Choose either a food item or a recipe",
+    path: ["food_item"],
+  });
+export type CreateMealPlanEntryInput = z.infer<typeof createMealPlanEntrySchema>;
