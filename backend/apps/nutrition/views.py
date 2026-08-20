@@ -1,4 +1,4 @@
-from rest_framework import viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -12,6 +12,7 @@ from .permissions import (
     RecipePermission,
 )
 from .serializers import (
+    DuplicateMealPlanDaySerializer,
     FoodItemSerializer,
     MealEntrySerializer,
     MealPlanEntrySerializer,
@@ -117,3 +118,13 @@ class MealPlanEntryViewSet(viewsets.ModelViewSet):
         plan_entry.refresh_from_db()
         serializer = self.get_serializer(plan_entry)
         return Response(serializer.data)
+
+    @action(detail=False, methods=["post"], url_path="duplicate-day")
+    def duplicate_day(self, request):
+        input_serializer = DuplicateMealPlanDaySerializer(data=request.data)
+        input_serializer.is_valid(raise_exception=True)
+        created = services.duplicate_meal_plan_day(
+            user=request.user, **input_serializer.validated_data
+        )
+        serializer = self.get_serializer(created, many=True)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)

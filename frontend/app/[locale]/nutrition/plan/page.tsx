@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
 import { DeleteMealPlanEntryButton } from "@/components/nutrition/delete-meal-plan-entry-button";
+import { DuplicateMealPlanDayButton } from "@/components/nutrition/duplicate-meal-plan-day-button";
 import { MarkMealPlanEntryEatenButton } from "@/components/nutrition/mark-meal-plan-entry-eaten-button";
 import { MealPlanEntryDialog } from "@/components/nutrition/meal-plan-entry-dialog";
 import { Badge } from "@/components/ui/badge";
@@ -163,6 +164,11 @@ export default function MealPlanPage() {
                         {t("addForDay")}
                       </Button>
                     }
+                  />
+                  <DuplicateMealPlanDayButton
+                    date={date}
+                    defaultTargetDate={addDays(date, 7)}
+                    disabled={dayEntries.length === 0}
                   />
                 </CardContent>
               </Card>

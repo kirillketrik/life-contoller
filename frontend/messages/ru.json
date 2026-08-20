@@ -496,7 +496,15 @@
     "markingEaten": "Отмечаем...",
     "markEatenSuccess": "Приём пищи записан в дневник",
     "markEatenFailed": "Не удалось отметить съеденным",
-    "editAction": "Изменить план"
+    "editAction": "Изменить план",
+    "duplicateDay": "Дублировать день",
+    "duplicateTitle": "Дублировать план на день",
+    "duplicateDescription": "Скопировать все запланированные приёмы пищи этого дня на другую дату.",
+    "duplicateTargetDate": "Куда скопировать",
+    "duplicateConfirm": "Дублировать",
+    "duplicating": "Копирование...",
+    "duplicateSuccess": "План скопирован",
+    "duplicateFailed": "Не удалось скопировать план"
   },
   "mealPlanEntry": {
     "trigger": "Запланировать приём пищи",

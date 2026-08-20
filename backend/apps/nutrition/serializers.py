@@ -370,3 +370,12 @@ class MealPlanEntrySerializer(ExactlyOneOfFoodOrRecipeMixin, serializers.ModelSe
 
     def get_is_eaten(self, obj: MealPlanEntry) -> bool:
         return obj.resulting_meal_entry_id is not None
+
+
+class DuplicateMealPlanDaySerializer(serializers.Serializer):
+    """Input for `MealPlanEntryViewSet.duplicate_day` — just the two dates,
+    validated as plain `DateField`s. No model behind this one, same
+    "un-modeled action input" shape a plain `serializers.Serializer` is for."""
+
+    source_date = serializers.DateField()
+    target_date = serializers.DateField()

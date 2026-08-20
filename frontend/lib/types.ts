@@ -624,6 +624,8 @@ export const mealPlanEntrySchema = z.object({
 });
 export type MealPlanEntry = z.infer<typeof mealPlanEntrySchema>;
 
+export const mealPlanEntryListSchema = z.array(mealPlanEntrySchema);
+
 /** Exactly one of `food_item`/`recipe` — mirrors the backend's
  * `mealplanentry_exactly_one_of_food_or_recipe` CheckConstraint, same shape
  * as `createMealEntrySchema` but keyed by `date` instead of `datetime`. */
@@ -641,3 +643,12 @@ export const createMealPlanEntrySchema = z
     path: ["food_item"],
   });
 export type CreateMealPlanEntryInput = z.infer<typeof createMealPlanEntrySchema>;
+
+/** Input for the `duplicate-day` action — copies every planned meal from
+ * `source_date` onto `target_date`. Response is `MealPlanEntry[]` (the newly
+ * created rows), reusing `mealPlanEntrySchema` rather than a bespoke shape. */
+export const duplicateMealPlanDaySchema = z.object({
+  source_date: z.string(),
+  target_date: z.string(),
+});
+export type DuplicateMealPlanDayInput = z.infer<typeof duplicateMealPlanDaySchema>;
