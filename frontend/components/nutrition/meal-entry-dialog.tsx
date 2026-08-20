@@ -25,7 +25,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ApiError, foodItems, mealEntries, recipes } from "@/lib/api";
-import { FOOD_ITEMS_QUERY_KEY, MEAL_ENTRIES_QUERY_KEY, RECIPES_QUERY_KEY } from "@/lib/query-keys";
+import {
+  FOOD_ITEMS_QUERY_KEY,
+  invalidateDailyNutritionMetricQueries,
+  MEAL_ENTRIES_QUERY_KEY,
+  RECIPES_QUERY_KEY,
+} from "@/lib/query-keys";
 import {
   type CreateMealEntryInput,
   createMealEntrySchema,
@@ -108,6 +113,7 @@ export function MealEntryDialog({
       entry ? mealEntries.update(entry.id, data) : mealEntries.create(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: MEAL_ENTRIES_QUERY_KEY });
+      invalidateDailyNutritionMetricQueries(queryClient);
       toast.success(entry ? t("updated") : t("logged"));
       setOpen(false);
     },

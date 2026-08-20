@@ -1,3 +1,5 @@
+import type { QueryClient } from "@tanstack/react-query";
+
 import type { AggregateParams, MealPlanEntryListParams } from "./api";
 
 export const METRIC_TYPES_QUERY_KEY = ["metric-types"] as const;
@@ -45,3 +47,21 @@ export const MEAL_PLAN_ENTRIES_QUERY_KEY = ["meal-plan-entries"] as const;
 
 export const mealPlanEntriesQueryKey = (params: MealPlanEntryListParams) =>
   ["meal-plan-entries", params.date ?? "", params.startDate ?? "", params.endDate ?? ""] as const;
+
+/** A logged meal write (create/update/delete) or marking a plan eaten
+ * recomputes that day's materialized daily-total MetricEntry rows (Калории/
+ * Белки/Жиры/Углеводы (день) — see apps.nutrition.services.
+ * recompute_daily_nutrition_metrics) on the shared metrics layer, but the
+ * frontend never learns those metric types' ids to target a specific
+ * invalidation the way metric-entry-dialog.tsx does for its own metric type.
+ * Invalidate broadly by query-key prefix instead — every metric-aggregate/
+ * metric-entries query for every metric type, plus the dashboard views that
+ * surface them — rather than silently leaving whichever daily-total metric
+ * happens to already be cached (chart, dashboard element, detail page) stale
+ * until an unrelated refetch. */
+export function invalidateDailyNutritionMetricQueries(queryClient: QueryClient) {
+  queryClient.invalidateQueries({ queryKey: ["metric-aggregate"] });
+  queryClient.invalidateQueries({ queryKey: ["metric-entries"] });
+  queryClient.invalidateQueries({ queryKey: DASHBOARD_ELEMENTS_QUERY_KEY });
+  queryClient.invalidateQueries({ queryKey: DASHBOARD_SUMMARY_QUERY_KEY });
+}

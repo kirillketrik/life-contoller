@@ -120,9 +120,22 @@ def recompute_daily_nutrition_metrics(*, user, entry_date: date_cls) -> None:
         for key in totals:
             totals[key] += entry_totals[key]
 
-    recorded_at = timezone.make_aware(
-        datetime_cls.combine(entry_date, time(12, 0)), timezone.get_current_timezone()
-    )
+    # Noon is a reasonable stand-in timestamp for a day-level total that has
+    # no natural single moment — except for *today*, where noon can still be
+    # in the future (e.g. it's currently morning). `current_value_for_metric_type`
+    # and every range-based query filter on `recorded_at <= now`, so a
+    # future-stamped "today" entry is invisible until real time catches up to
+    # noon — looking exactly like the total "isn't updating". Use the actual
+    # current moment for today instead; a `save(update_fields=["value", ...])`
+    # on an already-existing row below never touches recorded_at again, so
+    # this only matters at creation time, not on every recompute.
+    now = timezone.now()
+    if entry_date == now.date():
+        recorded_at = now
+    else:
+        recorded_at = timezone.make_aware(
+            datetime_cls.combine(entry_date, time(12, 0)), timezone.get_current_timezone()
+        )
 
     for key, metric_name in DAILY_METRIC_NAMES.items():
         metric_type = MetricType.objects.filter(name=metric_name).first()
@@ -185,16 +198,23 @@ def mark_meal_plan_entry_eaten(*, plan_entry: MealPlanEntry) -> MealEntry:
     Defaults the new entry's time to noon of the plan's date — same
     "noon local time" stand-in `recompute_daily_nutrition_metrics` already
     uses for materialized entries, since a plan only ever carries a date, not
-    a time of day. Raises `ValueError` if the plan was already marked eaten
+    a time of day — except when the plan's date is today, where noon could
+    still be in the future; the actual current moment is used instead, same
+    "never stamp today in the future" rule `recompute_daily_nutrition_metrics`
+    now follows. Raises `ValueError` if the plan was already marked eaten
     (idempotency guard, same "reject a second write" shape as
     `MetricType.is_singleton` enforcement) — the caller maps this to a 400.
     """
     if plan_entry.resulting_meal_entry_id is not None:
         raise ValueError("This planned meal has already been marked as eaten.")
 
-    at = timezone.make_aware(
-        datetime_cls.combine(plan_entry.date, time(12, 0)), timezone.get_current_timezone()
-    )
+    now = timezone.now()
+    if plan_entry.date == now.date():
+        at = now
+    else:
+        at = timezone.make_aware(
+            datetime_cls.combine(plan_entry.date, time(12, 0)), timezone.get_current_timezone()
+        )
     with transaction.atomic():
         meal_entry = MealEntry.objects.create(
             owner=plan_entry.owner,
